@@ -71,6 +71,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/iphumi-derived" \
             -archivePath "$RUNNER_TEMP/iPhUMI.xcarchive" \
             -resultBundlePath "$GITHUB_WORKSPACE/artifacts/iPhUMI.xcresult" \
+            CURRENT_PROJECT_VERSION=1 \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
             2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild.log"
@@ -81,6 +82,9 @@ jobs:
           app="$RUNNER_TEMP/iPhUMI.xcarchive/Products/Applications/iPhUMI.app"
           test -f "$app/Info.plist"
           test -f "$app/iPhUMI"
+          build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")
+          test -n "$build_number"
+          printf '%s\n' "$build_number" > artifacts/bundle-build-version.txt
           file "$app/iPhUMI" | tee artifacts/executable.txt
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist" > artifacts/bundle-identifier.txt
           mkdir -p "$RUNNER_TEMP/iphumi-package/Payload"

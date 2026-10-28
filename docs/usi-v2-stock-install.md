@@ -61,6 +61,18 @@ There is no local Xcode on Ubuntu. Local YAML/shell checks are not an iOS build.
 
 An unsigned IPA cannot be launched on a normal iPhone as-is. Stock source has one application target, no tracked `.entitlements` file and no `CODE_SIGN_ENTITLEMENTS` setting; this makes a free-account trial reasonable, but does not prove SideStore can sign and install it or that all runtime features work.
 
+### Direct IPA trial on Ubuntu
+
+The official [iloader project](https://github.com/nab138/iloader) supports importing an arbitrary IPA directly. This is the next free-account signing/install trial; SideStore setup is optional for this first install. Download only the official release. For this laptop, iloader v2.4.0's amd64 DEB was downloaded, its SHA-256 checked against GitHub's release digest, and extracted without system installation into `/home/emi-linux/Downloads/iloader-v2.4.0-portable`. All linked runtime libraries were found. Launcher: `usr/bin/iloader` inside that folder.
+
+Actual run-1 artifact inspection found the main app's `CFBundleVersion` absent: the upstream project references `CURRENT_PROJECT_VERSION` but does not set it. The workflow now supplies `CURRENT_PROJECT_VERSION=1` and checks that the archived app contains a nonempty build number. This changes build metadata, not Swift app behavior. This workflow correction needs publication/rerun before it is a newly cloud-verified artifact.
+
+For the already-downloaded run-1 IPA, a separate unsigned copy is prepared at `/home/emi-linux/Downloads/iPhUMI-stock-build1-unsigned.ipa`. Only `Payload/iPhUMI.app/Info.plist` was changed, adding `CFBundleVersion="1"`; the original downloaded IPA was retained. ZIP integrity, version metadata and byte-for-byte equality of every other entry were checked, including all compiled code and embedded frameworks. See local audit `docs/usi_v2_20261027/G1_IPA_METADATA_FIX.json` outside this repository. The corrected file remains unsigned and uninstalled.
+
+Connect/unlock/trust the iPhone over USB. In iloader, complete Apple Account authentication yourself, select the connected phone, use **Import IPA**, and choose the corrected `.ipa` in Downloads. Enter account credentials/2FA only into the app, never into chat. Keep a stable generated bundle identifier for subsequent updates. Preserve any exact error with identifiers removed. Do not revoke existing certificates or replace another app unless the user deliberately chooses that action. After installation, follow iOS trust/Developer Mode prompts and verify actual launch before calling G1 complete.
+
+### Optional SideStore route
+
 On Ubuntu, follow the current official [SideStore prerequisites](https://docs.sidestore.io/docs/installation/prerequisites) and its linked installation instructions. They currently require an Apple Account, Wi-Fi for setup/refresh, iloader/usbmuxd on Linux and LocalDevVPN for SideStore install/update/refresh operations. That setup Wi-Fi does not change the required experimental USB streaming path. Use your Apple credentials only within the selected installer, and keep pairing material local.
 
 After SideStore itself works, import the downloaded **unsigned IPA**, let the installer perform its own signing/provisioning, and record the exact outcome. If it rejects the IPA, reports unsupported entitlements/provisioning, or installation succeeds but launch fails, preserve the error text with personal identifiers removed. Do not call unsigned packaging an installation test. Free-account apps need periodic refresh; see [SideStore's FAQ](https://docs.sidestore.io/docs/faq.html) and [Apple's account limitations](https://developer.apple.com/help/account/basics/about-your-developer-account).
