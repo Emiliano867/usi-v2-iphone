@@ -1,4 +1,4 @@
-name: USI Stream iOS build
+name: Suction UMI v2 iOS build
 
 on:
   workflow_dispatch:
@@ -82,7 +82,12 @@ jobs:
           set -euo pipefail
           app="$RUNNER_TEMP/USIStream.xcarchive/Products/Applications/iPhUMI.app"
           test -f "$app/iPhUMI"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist" > artifacts/bundle-identifier.txt
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          test "$bundle_id" = 'com.emiliano867.suctionumiv2'
+          printf '%s\n' "$bundle_id" > artifacts/bundle-identifier.txt
+          display_name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$app/Info.plist")
+          test "$display_name" = 'Suction UMI v2'
+          printf '%s\n' "$display_name" > artifacts/bundle-display-name.txt
           build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")
           test -n "$build_number"
           printf '%s\n' "$build_number" > artifacts/bundle-build-version.txt
@@ -90,17 +95,17 @@ jobs:
           ditto "$app" "$RUNNER_TEMP/usi-package/Payload/iPhUMI.app"
           (
             cd "$RUNNER_TEMP/usi-package"
-            ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/artifacts/iPhUMI-USI-Stream-unsigned.ipa"
+            ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/artifacts/Suction-UMI-v2-unsigned.ipa"
           )
-          unzip -t artifacts/iPhUMI-USI-Stream-unsigned.ipa > artifacts/ipa-integrity.txt
-          shasum -a 256 artifacts/iPhUMI-USI-Stream-unsigned.ipa > artifacts/ipa-sha256.txt
+          unzip -t artifacts/Suction-UMI-v2-unsigned.ipa > artifacts/ipa-integrity.txt
+          shasum -a 256 artifacts/Suction-UMI-v2-unsigned.ipa > artifacts/ipa-sha256.txt
           printf '%s\n' 'UNSIGNED custom G3 app: compilation/tests only. Phone signing, camera/pose streaming and hardware rates require on-device validation.' > artifacts/STATUS.txt
 
       - name: Retain diagnostic evidence and unsigned IPA
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: usi-stream-unsigned-${{ github.run_id }}
+          name: suction-umi-v2-unsigned-${{ github.run_id }}
           path: artifacts/
           if-no-files-found: warn
           retention-days: 3

@@ -405,7 +405,7 @@
 				DEVELOPMENT_TEAM = P392Y8Q835;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = iPhUMI/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = iPhUMI;
+				INFOPLIST_KEY_CFBundleDisplayName = "Suction UMI v2";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -413,7 +413,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.real.iphumi;
+				PRODUCT_BUNDLE_IDENTIFIER = com.emiliano867.suctionumiv2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -436,7 +436,7 @@
 				DEVELOPMENT_TEAM = P392Y8Q835;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = iPhUMI/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = iPhUMI;
+				INFOPLIST_KEY_CFBundleDisplayName = "Suction UMI v2";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -444,7 +444,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.real.iphumi;
+				PRODUCT_BUNDLE_IDENTIFIER = com.emiliano867.suctionumiv2;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

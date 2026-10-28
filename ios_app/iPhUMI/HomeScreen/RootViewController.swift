@@ -42,7 +42,7 @@ class RootViewController: UIViewController {
         NSLayoutConstraint.deactivate(view.constraints)
         view.subviews.forEach { $0.removeFromSuperview() }
         let title = UILabel()
-        title.text = "iPhUMI"
+        title.text = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "iPhUMI"
         title.font = .systemFont(ofSize: 32, weight: .semibold)
         title.textAlignment = .center
         let versionText = UILabel()

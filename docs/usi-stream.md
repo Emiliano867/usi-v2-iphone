@@ -1,12 +1,12 @@
-# G3 USI Stream: build, install and validate
+# Suction UMI v2: G3 build, install and validate
 
-This adds a third **USI Stream** entry. Stock Collect Demonstrations and Deployment Mode remain available. The new mode uses one public-API ARKit session, raw camera pose/source timestamps, JPEG RGB and available raw depth/confidence. It does not yet implement BLE pressure, ROS publishing, MCAP, a calibrated suction TCP or calibrated clock mappings.
+The custom app is named **Suction UMI v2**, with bundle identifier **com.emiliano867.suctionumiv2**, separate from stock **com.real.iphumi**. This allows both apps to remain installed. It adds a third **USI Stream** entry; inherited Collect Demonstrations and Deployment Mode remain available. The new mode uses one public-API ARKit session, raw camera pose/source timestamps, JPEG RGB and available raw depth/confidence. It does not yet implement BLE pressure, ROS publishing, MCAP, a calibrated suction TCP or calibrated clock mappings.
 
 ## Current verification
 
 The Python protocol/usbmux/receiver tests pass locally (33 tests). This includes fragmented framing, bounded lengths, nonfinite/deep JSON, EOF/timeouts, reserved-field collisions, reconnect/session gaps and raw clock provenance. The new direct usbmuxd connector also connected to the real phone's still-installed **stock** port5555, and the USI parser correctly rejected its incompatible framing. That does not test the new ARKit app on hardware.
 
-Swift wire/mailbox tests are included and are run by the custom macOS workflow. There is no Swift/Xcode compiler on the Ubuntu laptop, so native tests, native app compilation and G3 phone operation remain pending until an actual successful custom build/install. Stock G2's measured30-FPS result is not a G3 result.
+The initial custom build at commit28fbc6a passed Python tests, Swift wire/mailbox tests, native compilation and unsigned packaging in run40638434877. That first artifact still shared the stock identity. The later separate-app name/identity update requires a new successful build and IPA identity check before installing **Suction UMI v2**. G3 phone operation remains untested. Stock G2's measured30-FPS result is not a G3 result.
 
 The wire contract is in [the design](superpowers/specs/2026-10-27-usi-stream-design.md). Port5558 is a separate USI2/version1 protocol, not stock PeerTalk. Every FRAME preserves session/sequence, raw ARKit seconds, phone uptime, 4x4 camera transform, position/quaternion, source/transmitted intrinsics, tracking, modality dimensions/encodings and explicit drop counters. RGB and depth are associated through the ARFrame; there is no invented independent LiDAR timestamp. Preview is independently throttled and outside raw pixels.
 
@@ -22,15 +22,15 @@ git push origin main
 
 Keep the bundle and older `usi_bundle` directory untracked; do not add them to a commit. The incremental bundle includes the previously prepared build-number correction. No force push is needed. If the repository advanced independently, preserve those commits and resolve the history before retrying.
 
-On GitHub's website open Actions → **USI Stream iOS build** → Run workflow on main. Use the website because the existing Codespaces integration credential previously returned403 for workflow dispatch. The original **Stock iPhUMI unsigned iOS build** still deliberately builds pinned upstream; it will not compile G3.
+On GitHub's website open Actions → **Suction UMI v2 iOS build** → Run workflow on main. Use the website because the existing Codespaces integration credential previously returned403 for workflow dispatch. The original **Stock iPhUMI unsigned iOS build** still deliberately builds pinned upstream; it will not compile G3.
 
-The custom workflow checks Python tests and Swift framing/mailbox tests, then installs locked pods and archives the current custom revision. It supplies a nonempty `CFBundleVersion` (`3.<run number>`), verifies it before packaging and emits `iPhUMI-USI-Stream-unsigned.ipa`. Download its `usi-stream-unsigned-<run id>` artifact ZIP from the actual successful run. Diagnostics can exist on a failed run, so confirm all required steps succeeded.
+The custom workflow checks Python tests and Swift framing/mailbox tests, then installs locked pods and archives the current custom revision. It supplies a nonempty `CFBundleVersion` (`3.<run number>`), verifies the separate bundle ID and display name before packaging, and emits `Suction-UMI-v2-unsigned.ipa`. Download its `suction-umi-v2-unsigned-<run id>` artifact ZIP from the actual successful run. Diagnostics can exist on a failed run, so confirm all required steps succeeded.
 
 ## Sign/install and enter the mode
 
-Use the same verified iloader path/account to import the **new custom IPA**. Keep the same generated app/bundle identity to update the existing app when the installer offers that choice; preserve any local demonstrations before removing an existing app. Account credentials, pairing records and signed provisioning profiles stay private.
+Use the same verified iloader path/account to import the **new Suction UMI v2 IPA**. Its source bundle ID is distinct from iPhUMI, so install it as a separate app and retain the stock app. Keep a stable generated identity for future updates to Suction UMI v2 itself. Account credentials, pairing records and signed provisioning profiles stay private.
 
-After installation, open iPhUMI. If the prior mode is restored, use its Home/back control to reveal the menu. The root controller restores a saved mode only once per launch, so returning Home now reveals all three entries. Select **USI Stream**. The phone should show normal RGB, camera XYZ, ARKit FPS/tracking/thermal state and a USB status. No jaw calibration or ultrawide initialization is required for this new path. **Reset tracking** starts a fresh ARSession/UUID world epoch; Home stops capture and the USB listener. Backgrounding stops capture; foregrounding starts a new epoch.
+After installation, open **Suction UMI v2**. If a prior mode is restored, use its Home/back control to reveal the menu. The root controller restores a saved mode only once per launch, so returning Home reveals all three entries. Select **USI Stream**. The phone should show normal RGB, camera XYZ, ARKit FPS/tracking/thermal state and a USB status. No jaw calibration or ultrawide initialization is required for this new path. **Reset tracking** starts a fresh ARSession/UUID world epoch; Home stops capture and the USB listener. Backgrounding stops capture; foregrounding starts a new epoch.
 
 ## Run on the Ubuntu laptop
 
