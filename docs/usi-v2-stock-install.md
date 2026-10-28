@@ -28,6 +28,23 @@ git push -u origin usi-v2/g1-stock-build:main
 
 Full upstream history was fetched during setup; the conditional also supports a fresh shallow clone. Authenticate through your own GitHub client/device login or VS Code; do not paste passwords/tokens into chat. If you use GitHub CLI, `gh auth login` is interactive and belongs in your terminal. Publishing is pending until the remote actually exists and the push succeeds.
 
+### Continue in the existing Codespace
+
+The GitHub repository now exists with initial commit `c8cd6885bdf3953d5909b590114cd18de750d14c` and its own README. That commit has been merged into the prepared local branch, preserving the original introduction. The local machine could read GitHub but its push failed for lack of authentication; no remote history was changed.
+
+A portable Git bundle is saved on the laptop as `/home/emi-linux/Downloads/usi-v2-g1-ready.bundle`. Drag this file from the laptop's Downloads folder into the **Codespaces Explorer** next to README.md. Then run the following in the **Codespaces terminal**, where the repository path is `/workspaces/usi-v2-iphone`:
+
+```bash
+git status --short
+git fetch ./usi-v2-g1-ready.bundle usi-v2/g1-stock-build
+git merge --ff-only FETCH_HEAD
+git push origin main
+```
+
+The uploaded bundle will appear as an untracked file; that is expected. Do not add it to a commit. The merge is a fast-forward because the original GitHub initial commit is already an ancestor of the prepared branch. If the Codespace has edited tracked files or its remote branch has advanced, preserve that work and resolve the reported condition before retrying; no force push is needed. GitHub authentication is still required for the final push. After a successful push, remove the uploaded bundle from the Codespace; the laptop copy remains available.
+
+The Actions workflow can then be started from the repository website as described below. Codespaces is the editor/terminal; the workflow runs the actual iOS build on its separate macOS runner.
+
 ## 2. Run the stock build
 
 Open the new repository → **Actions** → **Stock iPhUMI unsigned iOS build** → **Run workflow** on `main`. If GitHub prompts to enable Actions for the new repository, enable it. The workflow has no push/PR trigger. It checks out the exact public upstream commit independently of the tooling branch, so later custom application edits cannot silently change this baseline.
