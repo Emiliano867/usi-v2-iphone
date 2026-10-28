@@ -1,3 +1,12 @@
+# USI v2 iPhone build setup
+
+This checkout is prepared for the separate `Emiliano867/usi-v2-iphone` repository.
+Start with [repository creation, stock cloud build and free-install instructions](docs/usi-v2-stock-install.md).
+The build workflow uses pinned, unchanged upstream application sources. Cloud build,
+signing, phone installation and USB streaming require separate verification.
+
+The upstream iPhUMI README follows.
+
 # iPhUMI
 Pronounced: "eye-foo-me"
 
