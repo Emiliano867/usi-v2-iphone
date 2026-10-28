@@ -39,7 +39,8 @@ class RootViewController: UIViewController {
     private func configureHome(version: String) {
         // Keep the storyboard's stock controller identifiers/actions; lay out three
         // entries so the added mode also fits the landscape iPhone screen.
-        NSLayoutConstraint.deactivate(view.constraints)
+        // Removing the old controls also removes their constraints. Preserve
+        // UIKit's root/safe-area constraints so the new menu stays on screen.
         view.subviews.forEach { $0.removeFromSuperview() }
         let title = UILabel()
         title.text = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "iPhUMI"
