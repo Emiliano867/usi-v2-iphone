@@ -1,9 +1,25 @@
 import Foundation
 
+struct USIPreviewDetails: Equatable {
+    let tracking: String
+    let cameraRate: String
+    let depth: String
+    let diagnostics: String
+    let isCapturing: Bool
+
+    static let starting = USIPreviewDetails(tracking: "Starting", cameraRate: "Waiting for frames",
+        depth: "Waiting for frames", diagnostics: "Starting a new tracking session.", isCapturing: false)
+
+    static func unavailable(_ reason: String) -> USIPreviewDetails {
+        USIPreviewDetails(tracking: reason, cameraRate: "Paused", depth: "Unavailable",
+            diagnostics: reason, isCapturing: false)
+    }
+}
+
 struct USIPreviewUpdate {
     let epoch: String
     var jpeg: Data? = nil
-    var details: String? = nil
+    var details: USIPreviewDetails? = nil
     var clear = false
 }
 
@@ -18,13 +34,13 @@ final class USIPreviewMailbox {
     func reset(epoch: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
         self.epoch = epoch
-        pending = USIPreviewUpdate(epoch: epoch, jpeg: nil, details: "Starting new tracking epoch", clear: true)
+        pending = USIPreviewUpdate(epoch: epoch, jpeg: nil, details: .starting, clear: true)
         let needsSchedule = !scheduled
         scheduled = true
         return needsSchedule
     }
 
-    func offer(epoch: String, jpeg: Data? = nil, details: String? = nil) -> Bool {
+    func offer(epoch: String, jpeg: Data? = nil, details: USIPreviewDetails? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard epoch == self.epoch else { return false }
         var update = pending ?? USIPreviewUpdate(epoch: epoch)

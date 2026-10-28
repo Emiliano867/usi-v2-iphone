@@ -62,6 +62,11 @@ jobs:
           git diff --exit-code -- Podfile Podfile.lock
           cp Podfile.lock ../artifacts/Podfile.lock
 
+      - name: Check native landscape layout and larger text
+        run: |
+          set -euo pipefail
+          bash tests/ios-layout/run.sh "$GITHUB_WORKSPACE/artifacts/layout" 2>&1 | tee artifacts/layout-tests.log
+
       - name: Archive the custom USI Stream app without signing
         working-directory: ios_app
         run: |

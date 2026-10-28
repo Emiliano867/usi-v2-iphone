@@ -9,9 +9,10 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
     private let encodeQueue = DispatchQueue(label: "usi.arkit.encode", qos: .userInitiated)
     private let encoder = USIFrameEncoder()
     private let usb = USIUSBServer()
-    private let preview = UIImageView()
-    private let statusLabel = UILabel()
-    private let frameLabel = UILabel()
+    private let content = USILiveView(frame: .zero)
+    private weak var diagnostics: USIDiagnosticsViewController?
+    private var usbStatus = "Starting USB"
+    private var captureDetails = USIPreviewDetails.starting
     private let previewMailbox = USIPreviewMailbox()
     private var visible = false // main queue
     // The following capture/encode state belongs exclusively to captureQueue.
@@ -26,41 +27,18 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
     private var rateStart: TimeInterval = 0
     private var rateFrames = 0
 
+    override func loadView() { view = content }
+
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
-        preview.contentMode = .scaleAspectFit
-        preview.backgroundColor = .black
-        statusLabel.textColor = .white
-        statusLabel.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
-        statusLabel.text = "USI Stream — starting ARKit"
-        statusLabel.numberOfLines = 2
-        frameLabel.textColor = .white
-        frameLabel.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        frameLabel.numberOfLines = 3
-        frameLabel.text = "Camera pose only; suction TCP is not calibrated."
-        let close = UIButton(type: .system)
-        close.setTitle("Home", for: .normal)
-        close.addTarget(self, action: #selector(closePressed), for: .touchUpInside)
-        let reset = UIButton(type: .system)
-        reset.setTitle("Reset tracking", for: .normal)
-        reset.addTarget(self, action: #selector(resetPressed), for: .touchUpInside)
-        let header = UIStackView(arrangedSubviews: [close, statusLabel, reset])
-        header.axis = .horizontal
-        header.spacing = 16
-        let stack = UIStackView(arrangedSubviews: [header, preview, frameLabel])
-        stack.axis = .vertical
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8),
-            preview.heightAnchor.constraint(greaterThanOrEqualToConstant: 100)
-        ])
-        usb.onStatus = { [weak self] text in self?.statusLabel.text = "USI Stream · \(text)" }
+        content.onHome = { [weak self] in self?.closePressed() }
+        content.onDiagnostics = { [weak self] in self?.showDiagnostics() }
+        usb.onStatus = { [weak self] text in
+            guard let self else { return }
+            self.usbStatus = text
+            self.content.setUSBStatus(text)
+            self.updateDiagnostics()
+        }
         session.delegate = self
         session.delegateQueue = captureQueue
         NotificationCenter.default.addObserver(self, selector: #selector(backgrounded),
@@ -71,6 +49,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        guard !visible else { return }
         visible = true
         beginEpoch()
     }
@@ -88,7 +67,23 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         dismiss(animated: true)
     }
 
-    @objc private func resetPressed() { beginEpoch() }
+    private func showDiagnostics() {
+        guard presentedViewController == nil else { return }
+        let controller = USIDiagnosticsViewController()
+        controller.onReset = { [weak self] in self?.beginEpoch() }
+        // Keep capture running while inspecting diagnostics. A fullScreen modal
+        // would invoke viewWillDisappear and stop the ARSession/USB connection.
+        controller.modalPresentationStyle = .overFullScreen
+        diagnostics = controller
+        updateDiagnostics()
+        present(controller, animated: !UIAccessibility.isReduceMotionEnabled)
+    }
+
+    private func updateDiagnostics() {
+        let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "?"
+        let buildNumber = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "?"
+        diagnostics?.details = "\(usbStatus)\n\n\(captureDetails.diagnostics)\n\nPressure: unavailable in this build.\nHost recording: not reported.\nCamera pose only; tool calibration required.\n\nSuction UMI v2 · version \(version) (\(buildNumber))"
+    }
 
     @objc private func backgrounded() { stopCapture() }
 
@@ -108,7 +103,9 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
 
     private func beginEpoch(expectedSession: ARSession? = nil) {
         guard ARWorldTrackingConfiguration.isSupported else {
-            statusLabel.text = "ARKit world tracking is unavailable on this device"
+            captureDetails = .unavailable("ARKit world tracking is unavailable on this device")
+            content.apply(captureDetails)
+            updateDiagnostics()
             return
         }
         captureQueue.async { [weak self] in
@@ -186,10 +183,14 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             let duration = frame.timestamp - rateStart
             let fps = duration > 0 ? Double(rateFrames - 1) / duration : 0
             lastStatusTime = frame.timestamp
-            let text = String(format: "ARKit %.1f FPS · frame %llu · %@ · thermal %@\nXYZ %.3f %.3f %.3f m · encode drops %llu\nNative camera pose; TCP uncalibrated · session %@",
+            let depth = frame.sceneDepth.map { "\(CVPixelBufferGetWidth($0.depthMap)) × \(CVPixelBufferGetHeight($0.depthMap))" } ?? "No depth this frame"
+            let trackingText = tracking.0 == "normal" ? "Normal" : (tracking.1.isEmpty ? "Unavailable" : tracking.1.replacingOccurrences(of: "_", with: " ").capitalized)
+            let text = String(format: "Camera: %.1f FPS\nFrame: %llu\nTracking: %@\nThermal: %@\nXYZ: %.3f, %.3f, %.3f m\nEncode drops: %llu\nSession: %@",
                 fps, currentSequence, tracking.0, thermalDescription(), transform.columns.3.x, transform.columns.3.y,
-                transform.columns.3.z, encodeDrops, String(sessionID.prefix(8)))
-            if previewMailbox.offer(epoch: sessionID, details: text) { scheduleUIUpdate() }
+                transform.columns.3.z, encodeDrops, sessionID)
+            let details = USIPreviewDetails(tracking: trackingText, cameraRate: String(format: "%.1f FPS", fps),
+                depth: depth, diagnostics: "\(text)\nDepth: \(depth)", isCapturing: true)
+            if previewMailbox.offer(epoch: sessionID, details: details) { scheduleUIUpdate() }
         }
     }
 
@@ -232,6 +233,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         guard session === self.session else { return }
         running = false
         pending = nil
+        if previewMailbox.offer(epoch: sessionID, details: .unavailable("Camera interrupted")) { scheduleUIUpdate() }
         usb.health(event: "arkit_interrupted", message: "Capture interrupted; next resume resets world epoch")
     }
 
@@ -248,7 +250,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         running = false
         pending = nil
         usb.health(event: "arkit_error", message: error.localizedDescription)
-        DispatchQueue.main.async { [weak self] in self?.statusLabel.text = "ARKit: \(error.localizedDescription)" }
+        if previewMailbox.offer(epoch: sessionID, details: .unavailable("ARKit: \(error.localizedDescription)")) { scheduleUIUpdate() }
     }
 
     private func trackingDescription(_ state: ARCamera.TrackingState) -> (String, String) {
@@ -271,9 +273,13 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             guard let self, let update = self.previewMailbox.take(), self.visible else { return }
             let image = update.jpeg.flatMap { UIImage(data: $0) }
             guard self.previewMailbox.isCurrent(update.epoch) else { return }
-            if update.clear { self.preview.image = nil }
-            if let image { self.preview.image = image }
-            if let details = update.details { self.frameLabel.text = details }
+            if update.clear { self.content.preview.image = nil }
+            if let details = update.details {
+                self.captureDetails = details
+                self.content.apply(details)
+                self.updateDiagnostics()
+            }
+            if let image, self.captureDetails.isCapturing { self.content.preview.image = image }
         }
     }
 
