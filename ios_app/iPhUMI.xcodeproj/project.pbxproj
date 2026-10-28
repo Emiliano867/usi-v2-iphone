@@ -26,6 +26,11 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		A1B2C3D40000000000005558 /* USIStream */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = USIStream;
+			sourceTree = "<group>";
+		};
 		D93EB50F2F69D86700EED94D /* VideoWriter */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = VideoWriter;
@@ -96,6 +101,7 @@
 				0C34B3DA23077FC5005DB76E /* Info.plist */,
 				D93EB50F2F69D86700EED94D /* VideoWriter */,
 				D93EB5212F69D8B900EED94D /* Deployment */,
+				A1B2C3D40000000000005558 /* USIStream */,
 			);
 			path = iPhUMI;
 			sourceTree = "<group>";
@@ -148,6 +154,7 @@
 				D93EB5212F69D8B900EED94D /* Deployment */,
 				D93EB5272F69D8C700EED94D /* Util */,
 				D93EB5282F69D90300EED94D /* HomeScreen */,
+				A1B2C3D40000000000005558 /* USIStream */,
 			);
 			name = iPhUMI;
 			productName = CollaborativeSession;

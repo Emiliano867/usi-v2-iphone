@@ -6,6 +6,7 @@ Iphumi/suction umi v2 set up test
 
 This checkout is prepared for the separate `Emiliano867/usi-v2-iphone` repository.
 Start with [repository creation, stock cloud build and free-install instructions](docs/usi-v2-stock-install.md).
+For the new ARKit RGB/depth/pose mode, use [USI Stream G3 build and validation](docs/usi-stream.md).
 The build workflow uses pinned, unchanged upstream application sources. Cloud build,
 signing, phone installation and USB streaming require separate verification.
 

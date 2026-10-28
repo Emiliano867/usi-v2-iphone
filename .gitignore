@@ -1,4 +1,8 @@
 .DS_Store
+.build/
+.superpowers/
+__pycache__/
+*.jsonl
 *.egg-info
 *.pyc
 __pycache__

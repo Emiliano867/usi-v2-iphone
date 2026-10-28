@@ -1,0 +1,106 @@
+name: USI Stream iOS build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: usi-stream-ios-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  custom-device-build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      COCOAPODS_VERSION: 1.16.2
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout this custom application revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Record source and toolchain provenance
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          test -d "$DEVELOPER_DIR"
+          {
+            git rev-parse HEAD
+            printf 'upstream_base=1e9e622e77ad32990c42f839e12212d2a995faf9\n'
+            printf 'runner_image=%s\n' "${ImageVersion:-unknown}"
+            sw_vers
+            xcodebuild -version
+            xcrun --sdk iphoneos --show-sdk-version
+            swift --version
+            python3 --version
+          } | tee artifacts/provenance.txt
+
+      - name: Test Python protocol and USB receiver
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s tests -p 'test_usi_*.py' -v 2>&1 | tee artifacts/python-tests.log
+
+      - name: Test Swift framing against the shared wire fixture
+        run: |
+          set -euo pipefail
+          swift test 2>&1 | tee artifacts/swift-tests.log
+
+      - name: Install locked CocoaPods dependencies
+        working-directory: ios_app
+        run: |
+          set -euo pipefail
+          gem install cocoapods --version "$COCOAPODS_VERSION" --user-install --no-document
+          export PATH="$(ruby -r rubygems -e 'puts Gem.user_dir')/bin:$PATH"
+          pod "_${COCOAPODS_VERSION}_" install --deployment 2>&1 | tee ../artifacts/pod-install.log
+          git diff --exit-code -- Podfile Podfile.lock
+          cp Podfile.lock ../artifacts/Podfile.lock
+
+      - name: Archive the custom USI Stream app without signing
+        working-directory: ios_app
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -workspace iPhUMI.xcworkspace -scheme iPhUMI -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/usi-derived" \
+            -archivePath "$RUNNER_TEMP/USIStream.xcarchive" \
+            -resultBundlePath "$GITHUB_WORKSPACE/artifacts/USIStream.xcresult" \
+            CURRENT_PROJECT_VERSION="3.${GITHUB_RUN_NUMBER}" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
+            2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild.log"
+
+      - name: Validate metadata and package unsigned IPA
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/USIStream.xcarchive/Products/Applications/iPhUMI.app"
+          test -f "$app/iPhUMI"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist" > artifacts/bundle-identifier.txt
+          build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")
+          test -n "$build_number"
+          printf '%s\n' "$build_number" > artifacts/bundle-build-version.txt
+          mkdir -p "$RUNNER_TEMP/usi-package/Payload"
+          ditto "$app" "$RUNNER_TEMP/usi-package/Payload/iPhUMI.app"
+          (
+            cd "$RUNNER_TEMP/usi-package"
+            ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/artifacts/iPhUMI-USI-Stream-unsigned.ipa"
+          )
+          unzip -t artifacts/iPhUMI-USI-Stream-unsigned.ipa > artifacts/ipa-integrity.txt
+          shasum -a 256 artifacts/iPhUMI-USI-Stream-unsigned.ipa > artifacts/ipa-sha256.txt
+          printf '%s\n' 'UNSIGNED custom G3 app: compilation/tests only. Phone signing, camera/pose streaming and hardware rates require on-device validation.' > artifacts/STATUS.txt
+
+      - name: Retain diagnostic evidence and unsigned IPA
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: usi-stream-unsigned-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 3
