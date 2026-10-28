@@ -45,8 +45,11 @@ cat > "$probe_app/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 codesign --force --sign - "$probe_app"
-for device_type in iPhone-15-Pro iPhone-SE-3rd-generation; do
-    probe_device=$(xcrun simctl create "USI-layout-$device_type" "com.apple.CoreSimulator.SimDeviceType.$device_type" "$runtime")
+for device_name in 'iPhone 15 Pro' 'iPhone SE (3rd generation)'; do
+    # Resolve identifiers from Xcode instead of guessing punctuation in model IDs.
+    device_type=$(xcrun simctl list devicetypes --json | python3 -c 'import json,sys; matches=[d for d in json.load(sys.stdin)["devicetypes"] if d["name"]==sys.argv[1]]; assert len(matches)==1,"Required simulator model unavailable: "+sys.argv[1]; print(matches[0]["identifier"])' "$device_name")
+    device_label=${device_type##*.}
+    probe_device=$(xcrun simctl create "USI-layout-$device_label" "$device_type" "$runtime")
     xcrun simctl boot "$probe_device"
     xcrun simctl bootstatus "$probe_device" -b
     xcrun simctl install "$probe_device" "$probe_app"
@@ -56,9 +59,9 @@ for device_type in iPhone-15-Pro iPhone-SE-3rd-generation; do
         [[ ! -f "$app_data/Documents/layout-result.json" ]] || break
         sleep 1
     done
-    mkdir -p "$output_dir/$device_type"
-    cp "$app_data/Documents/"* "$output_dir/$device_type/"
-    python3 - "$output_dir/$device_type/layout-result.json" <<'PY'
+    mkdir -p "$output_dir/$device_label"
+    cp "$app_data/Documents/"* "$output_dir/$device_label/"
+    python3 - "$output_dir/$device_label/layout-result.json" <<'PY'
 import json, sys
 with open(sys.argv[1]) as stream:
     result = json.load(stream)
