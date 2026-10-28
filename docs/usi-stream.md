@@ -12,10 +12,10 @@ The wire contract is in [the design](superpowers/specs/2026-10-27-usi-stream-des
 
 ## Publish and build from Codespaces
 
-Upload the laptop's prepared `usi-v2-g3-ready.bundle` into the Codespaces Explorer, then run these commands in the Codespace's repository terminal:
+The initial G3 transfer is commit28fbc6a. To apply the later separate-app identity/name update, upload the laptop's small `suction-umi-v2-separate-app.bundle` into the Codespaces Explorer, then run these commands in the Codespace's repository terminal:
 
 ```bash
-git fetch ./usi-v2-g3-ready.bundle usi-v2/g3-arkit-usb &&
+git fetch ./suction-umi-v2-separate-app.bundle usi-v2/g3-arkit-usb &&
 git merge --ff-only FETCH_HEAD &&
 git push origin main
 ```
