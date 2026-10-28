@@ -232,6 +232,7 @@ final class USIDiagnosticsViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
+        view.accessibilityViewIsModal = true
         let title = USIInterface.label("Diagnostics", style: .title2)
         title.accessibilityTraits.insert(.header)
         text.text = details
