@@ -221,6 +221,8 @@ class TrialModel:
         if request_id == self._request_id:
             _check(trial_id == self.trial_id,'request ID reused for another trial'); return
         _check(self.state in ('not_connected','idle','saved','incomplete'),'trial already active')
+        if trial_id != self.trial_id:
+            self.host_session_id=None; self._retired_hosts.clear()
         self._request_id=request_id; self.trial_id=trial_id; self.state='preparing'; self.revision=None
         self.received_ns=None; self.verification='pending'
 

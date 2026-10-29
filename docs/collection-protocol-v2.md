@@ -4,7 +4,7 @@ This contract supplies transport validation and pure collection state. It does n
 
 ## Framing and limits
 
-The 16-byte header is network byte order `!4sHHII`: magic `USI2`, version **2**, message type (uint16), JSON byte length (uint32), payload byte length (uint32). Metadata is UTF-8 JSON, length **2…65,536** bytes, depth at most **32**. Payload is at most **16,777,216** bytes. Only FRAME has payload. A sensor or pose batch contains **1…64** samples and still must fit the metadata byte bound. All objects reject unknown fields and duplicate JSON keys; missing required fields, nonfinite numbers, booleans in numeric fields, invalid enum values and incompatible v1 headers are errors. Integer fields require integer JSON tokens, are bounded as shown below, and never accept booleans. JSON Schema integer validation alone is weaker than this token rule. Receiver validation precedes reading/allocating image payload. An unconsumed socket timeout requires closing/reconnecting because restarting a reader mid-packet loses framing.
+The 16-byte header is network byte order `!4sHHII`: magic `USI2`, version **2**, message type (uint16), JSON byte length (uint32), payload byte length (uint32). Metadata is UTF-8 JSON, length **2…65,536** bytes, depth at most **32**. Payload is at most **16,777,216** bytes. Only FRAME has payload. A sensor or pose batch contains **1…64** samples and still must fit the metadata byte bound. All objects reject unknown fields and duplicate JSON keys; missing required fields, nonfinite numbers, booleans in numeric fields, invalid enum values and incompatible v1 headers are errors. Every integer JSON token, including integers used in number fields, must be in the shared signed/unsigned 64-bit domain **−2^63…2^64−1**; field-specific bounds may be tighter. Floating-point tokens must fit finite IEEE754 binary64. Integer fields require integer JSON tokens and never accept booleans. Oversized numbers and JSON parser failures are consistently reported as ProtocolError in Python and USICollectionError in Swift. JSON Schema integer validation alone is weaker than this token rule. Receiver validation precedes reading/allocating image payload. An unconsumed socket timeout requires closing/reconnecting because restarting a reader mid-packet loses framing.
 
 | ID | Type | Metadata definition |
 |---|---|---|
@@ -14,11 +14,11 @@ The 16-byte header is network byte order `!4sHHII`: magic `USI2`, version **2**,
 | 4 | PONG | phone receive/send times and originating host ping |
 | 5 | HEALTH | event/message, per-stream counters, optional changed capabilities/thermal status |
 | 6 | POSES | phone/world epoch, independent ARFrame pose batch |
-| 7 | PRESSURES | ESP source/boot and phone/BLE connection IDs, three-channel sample batch |
+| 7 | PRESSURE | ESP source/boot and phone/BLE connection IDs, three-channel sample batch |
 | 8 | TRIGGER | independent trigger identity/time, transition or heartbeat, pressed boolean |
-| 9 | CLOCK | completed BLE or USB four-timestamp exchange and explicit fit validity |
-| 10 | TRIAL_REQUEST | prepare/begin/stop/status discriminated request |
-| 11 | TRIAL_STATUS | authoritative host state/revision, provisional counters and final verification |
+| 9 | BLE_CLOCK | completed BLE or USB four-timestamp exchange and explicit fit validity |
+| 10 | TRIAL_COMMAND | prepare/begin/stop/status discriminated request |
+| 11 | TRIAL_STATUS | authoritative host state/revision, profile, required/missing inventory, provisional counters and final verification |
 
 Swift sorted JSON and Python sorted compact JSON agree byte-for-byte on the committed vectors. Other legal floating-point/Unicode JSON spellings need not have identical bytes; compare decoded values. The wire does not impose JSON canonicalization.
 
@@ -33,7 +33,7 @@ A sample identity is `(stream_id, source_id, epoch_id, sequence)`:
 | main_rgb | FRAME.session_id (phone session) | FRAME.world_epoch_id | FRAME.frame_seq |
 | camera_pose | POSES.session_id | POSES.world_epoch_id | sample.frame_seq |
 | ultrawide | FRAME.session_id | FRAME.world_epoch_id (capture/world epoch) | independent FRAME.frame_seq |
-| pressures | PRESSURES.source_id | PRESSURES.boot_id | sample.sequence |
+| pressures | PRESSURE.source_id | PRESSURE.boot_id | sample.sequence |
 | trigger | TRIGGER.source_id | TRIGGER.boot_id | TRIGGER.sequence, independently counted |
 
 Phone `session_id` must change on a process/session restart. World/capture epoch changes on tracking reset/session interruption that invalidates continuity. ESP `boot_id` changes on reboot. BLE `connection_id` changes on each connection, but does not reset the device sample identity or erase a gap. `phone_session_id` records which phone received the sensor data. Never treat a delayed prior-epoch packet as current telemetry.
@@ -58,17 +58,19 @@ A fence uses `(stream_id,source_id,epoch_id,next_sequence)`. The five valid fenc
 
 An explicitly selected Core trial omits only the ultrawide lane. The host must require all remaining lane fences exactly once, matching prepared capabilities; the generic codec permits a nonempty subset for protocol tests and leaves readiness/coverage checks to the trial controller. Fences for static/derived stream names are rejected by the codec.
 
-`raw_depth`/`depth_confidence` inherit the main RGB frame identity/fence; each carries only the samples actually delivered by the configured ARKit path and joins on frame_seq. Tracking inherits the independent pose lane; derived seal inherits pressure sample identities plus calibration ID. Do not demand a newly exposed depth sample at each RGB exposure. Camera calibration and trial metadata are immutable prepared snapshots written at trial start. HEALTH counters/capability changes and CLOCK exchange IDs are ordered control evidence, bounded by trial control processing; the host records relevant exchanges/health while draining and writes final counters/verification before closure. They do not acquire camera-style fences. Count every enabled topic independently in the reopened bag, and verify derived joins as well as lane boundaries.
+`raw_depth`/`depth_confidence` inherit the main RGB frame identity/fence; each carries only the samples actually delivered by the configured ARKit path and joins on frame_seq. Tracking inherits the independent pose lane; derived seal inherits pressure sample identities plus calibration ID. Do not demand a newly exposed depth sample at each RGB exposure. Camera calibration and trial metadata are immutable prepared snapshots written at trial start. HEALTH counters/capability changes and BLE_CLOCK exchange IDs are ordered control evidence, bounded by trial control processing; the host records relevant exchanges/health while draining and writes final counters/verification before closure. They do not acquire camera-style fences. Count every enabled topic independently in the reopened bag, and verify derived joins as well as lane boundaries.
 
 Final source counters are per `(stream_id,source_id,epoch_id)`, not one shared image count. Counter values are cumulative within that source epoch (including the captured trial-end snapshot); obtain trial counts by subtracting the prepared/begin baseline for that identity. `source_count`, `received_count`, `writer_accepted_count`, `queue_overflow_count`, `rejected_count`, `duplicate_count` explicitly admit **null** (Unavailable). Do not replace a missing counter with zero. Missing ranges use `[start,end_exclusive)`, sorted, nonoverlapping. Final source snapshots may have `writer_accepted_count:null`; the host supplies its authoritative counters later. Successful writes remain provisional until reopening/deserialization/decoding and manifest verification. A missing image, pose or pressure sample inside the source fences, any source overflow, failed closure or failed required modality/rate check means Incomplete.
 
 Host request idempotency is scoped to `request_id` and the exact normalized request contents. Repeating an identical request returns its existing result/state without creating another writer. Reusing an ID with different contents is a conflict. `expected_revision` must equal the current host state revision for a **new mutating** request; duplicate retries resolve before this check. `status` is read-only and ignores expected_revision. It still carries request/trial IDs for correlation. The host owns this bounded request/outcome ledger and disk lifecycle (Task 2); the pure phone model only guarantees idempotent repeated local request submission and revision-safe status acceptance. Host heartbeat `host_time_ns` advances independently; revision advances when semantic state changes, not on heartbeat. Same-revision duplicate statuses must agree on state and verification. A lower-revision status must not refresh liveness.
 
-TRIAL_STATUS `ready` advertises idle preparation capability, not an open bag. An idle heartbeat has `trial_id:null`, `request_id:null`, `state:"idle"`, `verification:"pending"`, a revision, current host time and counters. `saved` requires a non-null bag path and `verification:"passed"`; only Saved can carry Passed. Incomplete should carry Failed and a concrete reason. Host heartbeats/statuses are trusted only within the current connection/host session and the selected trial; the phone model rejects a new host attempting to continue an active trial as Recording. It accepts the new host's Incomplete outcome. Finalizing and terminal outcomes cannot regress to Recording. Status stale after 2 s removes Recording assurance (`host_stale`), while Stop remains reachable. Opening Data/Diagnostics must not replace this model or camera ownership.
+TRIAL_STATUS always carries `profile`, `required_streams`, `missing_modalities` and `missing_required_streams`, including recovered terminal outcomes. `missing_modalities` records deliberate profile exclusions such as Core's ultrawide omission; `missing_required_streams` records unavailable sources that the selected profile requires and must be a subset of `required_streams`. Each list contains at most 32 unique known stream names. Full status requires the entire thirteen-stream Full set; Core requires its twelve-stream set and explicitly lists ultrawide in `missing_modalities`. A null profile is allowed only in Idle with empty lists. These required fields mean an inventory never becomes inferred from omitted data. `missing_required_streams` may be nonempty while Preparing or Incomplete (including a blocked preparation reason), but must be empty for Recording and Saved assurance.
+
+TRIAL_STATUS `ready` advertises idle preparation capability, not an open bag. An unselected idle heartbeat has `trial_id:null`, `request_id:null`, `state:"idle"`, `verification:"pending"`, `profile:null`, `required_streams:[]`, `missing_modalities:[]`, `missing_required_streams:[]`, a revision, current host time and counters. An idle host with a selected profile may advertise its complete validated inventory instead. `saved` requires a non-null bag path, `verification:"passed"` and an empty `missing_required_streams`; only Saved can carry Passed. Incomplete should carry Failed and a concrete reason. Host heartbeats/statuses are trusted only within the current connection/host session and the selected trial; the phone model rejects a new host attempting to continue an active trial as Recording. It accepts the new host's Incomplete outcome. Explicitly selecting a distinct new trial after a terminal outcome clears the old trial's host association, allowing the replacement host to acknowledge Preparing and Recording for the new trial; an acknowledged active trial still rejects a silent takeover. Finalizing and terminal outcomes cannot regress to Recording. Status stale after 2 s removes Recording assurance (`host_stale`), while Stop remains reachable. Opening Data/Diagnostics must not replace this model or camera ownership.
 
 ## Clock and calibration semantics
 
-PING/PONG preserve the first three USB timestamps; the host records receipt and emits/persists CLOCK with all four. USB CLOCK: `t1_ns` host send, `t2_ns` phone receipt, `t3_ns` phone send, `t4_ns` host receipt. BLE CLOCK: `t1_ns` phone send, `t2_ns` ESP receipt, `t3_ns` ESP send, `t4_ns` phone receipt. ESP microseconds are multiplied exactly by 1,000 for these CLOCK fields; retain the raw exchange/source fields in provenance. `source_id` identifies the responding clock owner and `epoch_id` its boot/session epoch. The affine mapping maps responder monotonic nanoseconds to initiator monotonic nanoseconds: `initiator_ns = scale * responder_ns + offset_ns`. This is not an epoch mapping. For valid fits, scale must be positive and scale/offset/uncertainty all known; `valid:false` with null fit fields is the initial honest state. BLE and USB mappings are independent evidence; shared bag membership never implies synchronization. Wall-time mapping, fit residuals/estimator provenance and final clock validity belong in host manifests/typed metadata.
+The canonical BLE_CLOCK message name covers both links via its `link` discriminator; its numeric wire ID remains 9. PING/PONG preserve the first three USB timestamps; the host records receipt and emits/persists BLE_CLOCK with all four. USB BLE_CLOCK: `t1_ns` host send, `t2_ns` phone receipt, `t3_ns` phone send, `t4_ns` host receipt. BLE BLE_CLOCK: `t1_ns` phone send, `t2_ns` ESP receipt, `t3_ns` ESP send, `t4_ns` phone receipt. ESP microseconds are multiplied exactly by 1,000 for these BLE_CLOCK fields; retain the raw exchange/source fields in provenance. `source_id` identifies the responding clock owner and `epoch_id` its boot/session epoch. The affine mapping maps responder monotonic nanoseconds to initiator monotonic nanoseconds: `initiator_ns = scale * responder_ns + offset_ns`. This is not an epoch mapping. For valid fits, scale must be positive and scale/offset/uncertainty all known; `valid:false` with null fit fields is the initial honest state. BLE and USB mappings are independent evidence; shared bag membership never implies synchronization. Wall-time mapping, fit residuals/estimator provenance and final clock validity belong in host manifests/typed metadata.
 
 Pressure calibration is explicit validated data: nonempty calibration ID, three C1/C2/C3 ordered chamber mappings, sensor/sector indices each a permutation of 0/1/2, nonnegative finite `seal_on_kpa_abs < seal_off_kpa_abs`, and per-channel persistence. Sector index identifies one of three equal 120° sectors; physical orientation/provenance must be measured, not copied from a mockup. The wire snapshot also includes optional measured ambient absolute pressure and provenance. The pure seal model does not use ambient to invent differential measurements. Raw pressure works without calibration. Valid fresh samples without calibration remain Uncalibrated/gray. Invalid/missing/stale stay gray with no stale numeric measurement presented as current. Known unsealed is red; sealed is green. A low reading seals only after persistence; hysteresis retains the prior known state between thresholds. Staleness/invalidity resets persistence. Full/Partial/None is reported only when all three channels are known; otherwise aggregate Unavailable. Pressed trigger means suction Off, released means On, and stale/missing means Unknown, independently of pressure and without claiming measured motor behavior.
 
@@ -120,7 +122,7 @@ USICollectionWire.decode(_ data: Data) throws -> USICollectionPacket
 USICollectionWire.recvPacket(read: (Int) throws -> Data) throws -> USICollectionPacket?
 USICollectionWire.validateMetadata(type: USICollectionMessageType, metadata: [String:Any], payloadLength: Int = 0) throws
 USICollectionWire.sliceFrame(_ packet: USICollectionPacket) throws -> USICollectionFrameParts
-// cases hello/frame/ping/pong/health/poses/pressures/trigger/clock/trialRequest/trialStatus
+// cases hello/frame/ping/pong/health/poses/pressure/trigger/bleClock/trialCommand/trialStatus
 // USICollectionError.invalid(String); packet.type/metadata/payload; frameParts.rgb/depth/confidence (Data?)
 // fullRequiredStreams/coreRequiredStreams/fencedStreams; port/headerLength/maxMetadataLength/maxPayloadLength/maxBatch/maxNesting
 
@@ -152,7 +154,7 @@ USISealChannelState cases match Python states. USISealAggregate cases unavailabl
 
 ## Complete metadata schemas
 
-The following JSON Schema 2020-12 `$defs` are complete for every message metadata object. Select by header type; FRAME and TRIAL_REQUEST are discriminated unions. Runtime also enforces the semantic joins/order/fences/quality/raw-sequence/calibration/profile/saved/clock checks described above, finite JSON and depth/byte limits. Definitions are derived directly from `collection_protocol.SCHEMAS`, not a looser hand-maintained example.
+Select the metadata definition by the numeric header message type. All definitions come directly from Python SCHEMAS. Runtime additionally applies finite numeric/token bounds, depth/byte limits, source joins/order/fences, quality/raw-sequence agreement, calibrated mapping/profile consistency and Saved/clock checks described above. FRAME and TRIAL_COMMAND are strict discriminated unions.
 
 ```json
 {
@@ -1330,7 +1332,7 @@ The following JSON Schema 2020-12 `$defs` are complete for every message metadat
       ],
       "additionalProperties": false
     },
-    "PRESSURES": {
+    "PRESSURE": {
       "type": "object",
       "properties": {
         "source_id": {
@@ -1416,7 +1418,7 @@ The following JSON Schema 2020-12 `$defs` are complete for every message metadat
       ],
       "additionalProperties": false
     },
-    "CLOCK": {
+    "BLE_CLOCK": {
       "type": "object",
       "properties": {
         "link": {
@@ -1505,7 +1507,7 @@ The following JSON Schema 2020-12 `$defs` are complete for every message metadat
       ],
       "additionalProperties": false
     },
-    "TRIAL_REQUEST": {
+    "TRIAL_COMMAND": {
       "anyOf": [
         {
           "$ref": "#/$defs/PrepareRequest"
@@ -1566,6 +1568,43 @@ The following JSON Schema 2020-12 `$defs` are complete for every message metadat
         "ready": {
           "$ref": "#/$defs/Boolean"
         },
+        "profile": {
+          "anyOf": [
+            {
+              "enum": [
+                "full",
+                "core"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "required_streams": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StreamID"
+          },
+          "minItems": 0,
+          "maxItems": 32
+        },
+        "missing_modalities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StreamID"
+          },
+          "minItems": 0,
+          "maxItems": 32
+        },
+        "missing_required_streams": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StreamID"
+          },
+          "minItems": 0,
+          "maxItems": 32
+        },
         "reason": {
           "anyOf": [
             {
@@ -1610,6 +1649,10 @@ The following JSON Schema 2020-12 `$defs` are complete for every message metadat
         "revision",
         "state",
         "ready",
+        "profile",
+        "required_streams",
+        "missing_modalities",
+        "missing_required_streams",
         "reason",
         "bag_path",
         "verification",
@@ -1623,28 +1666,9 @@ The following JSON Schema 2020-12 `$defs` are complete for every message metadat
 
 ## Complete synthetic wire examples
 
-Each example is the decoded metadata for its correspondingly named shared hex fixture. FRAME payload bytes are explicitly synthetic `jpg1234567812` (main) and `jpg` (ultrawide), not decodable camera evidence. All identities, capabilities and measured-looking values are test-only.
+Each valid example is decoded metadata for its shared hex fixture. FRAME payloads are synthetic `jpg1234567812` (main) and `jpg` (ultrawide), not decodable camera evidence. All identities/capabilities/pressures are test-only. Shared `collection_malformed_*.hex` packets are rejection vectors (oversized quaternion, oversized timestamp and integer beyond the shared domain); they must not be treated as valid examples.
 
-### collection_begin (TRIAL_REQUEST)
-
-```json
-{
-  "action": "begin",
-  "expected_revision": 2,
-  "fences": [
-    {
-      "epoch_id": "world-A",
-      "next_sequence": 9,
-      "source_id": "phone-A",
-      "stream_id": "camera_pose"
-    }
-  ],
-  "request_id": "req-A",
-  "trial_id": "trial-A"
-}
-```
-
-### collection_clock (CLOCK)
+### collection_ble_clock (BLE_CLOCK)
 
 ```json
 {
@@ -1871,7 +1895,124 @@ Each example is the decoded metadata for its correspondingly named shared hex fi
 }
 ```
 
-### collection_prepare (TRIAL_REQUEST)
+### collection_pressure (PRESSURE)
+
+```json
+{
+  "boot_id": "boot-A",
+  "connection_id": "ble-A",
+  "phone_session_id": "phone-A",
+  "samples": [
+    {
+      "phone_receive_ns": 200,
+      "pressure_centi_pa": [
+        10000000,
+        9000000,
+        8000000
+      ],
+      "quality_mask": 7,
+      "raw_sequence": 0,
+      "sequence": 0,
+      "source_time_us": 100
+    }
+  ],
+  "source_id": "esp"
+}
+```
+
+### collection_status (TRIAL_STATUS)
+
+```json
+{
+  "bag_path": null,
+  "counters": [],
+  "host_session_id": "host-A",
+  "host_time_ns": 100,
+  "missing_modalities": [],
+  "missing_required_streams": [],
+  "profile": "full",
+  "ready": true,
+  "reason": null,
+  "request_id": "req-A",
+  "required_streams": [
+    "main_rgb",
+    "raw_depth",
+    "depth_confidence",
+    "camera_pose",
+    "tracking",
+    "camera_calibration",
+    "ultrawide",
+    "pressures",
+    "trigger",
+    "seal",
+    "trial_metadata",
+    "timing",
+    "health"
+  ],
+  "revision": 2,
+  "state": "recording",
+  "trial_id": "trial-A",
+  "verification": "pending"
+}
+```
+
+### collection_status_core (TRIAL_STATUS)
+
+```json
+{
+  "bag_path": null,
+  "counters": [],
+  "host_session_id": "host-A",
+  "host_time_ns": 100,
+  "missing_modalities": [
+    "ultrawide"
+  ],
+  "missing_required_streams": [],
+  "profile": "core",
+  "ready": true,
+  "reason": null,
+  "request_id": "req-A",
+  "required_streams": [
+    "main_rgb",
+    "raw_depth",
+    "depth_confidence",
+    "camera_pose",
+    "tracking",
+    "camera_calibration",
+    "pressures",
+    "trigger",
+    "seal",
+    "trial_metadata",
+    "timing",
+    "health"
+  ],
+  "revision": 2,
+  "state": "recording",
+  "trial_id": "trial-A",
+  "verification": "pending"
+}
+```
+
+### collection_trial_command_begin (TRIAL_COMMAND)
+
+```json
+{
+  "action": "begin",
+  "expected_revision": 2,
+  "fences": [
+    {
+      "epoch_id": "world-A",
+      "next_sequence": 9,
+      "source_id": "phone-A",
+      "stream_id": "camera_pose"
+    }
+  ],
+  "request_id": "req-A",
+  "trial_id": "trial-A"
+}
+```
+
+### collection_trial_command_prepare (TRIAL_COMMAND)
 
 ```json
 {
@@ -2034,50 +2175,7 @@ Each example is the decoded metadata for its correspondingly named shared hex fi
 }
 ```
 
-### collection_pressures (PRESSURES)
-
-```json
-{
-  "boot_id": "boot-A",
-  "connection_id": "ble-A",
-  "phone_session_id": "phone-A",
-  "samples": [
-    {
-      "phone_receive_ns": 200,
-      "pressure_centi_pa": [
-        10000000,
-        9000000,
-        8000000
-      ],
-      "quality_mask": 7,
-      "raw_sequence": 0,
-      "sequence": 0,
-      "source_time_us": 100
-    }
-  ],
-  "source_id": "esp"
-}
-```
-
-### collection_status (TRIAL_STATUS)
-
-```json
-{
-  "bag_path": null,
-  "counters": [],
-  "host_session_id": "host-A",
-  "host_time_ns": 100,
-  "ready": true,
-  "reason": null,
-  "request_id": "req-A",
-  "revision": 2,
-  "state": "recording",
-  "trial_id": "trial-A",
-  "verification": "pending"
-}
-```
-
-### collection_status_request (TRIAL_REQUEST)
+### collection_trial_command_status (TRIAL_COMMAND)
 
 ```json
 {
@@ -2088,7 +2186,7 @@ Each example is the decoded metadata for its correspondingly named shared hex fi
 }
 ```
 
-### collection_stop (TRIAL_REQUEST)
+### collection_trial_command_stop (TRIAL_COMMAND)
 
 ```json
 {

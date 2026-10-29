@@ -113,3 +113,13 @@ class CollectionStateTests(unittest.TestCase):
         self.assertFalse(model.apply_status(host_session_id='h',trial_id='t',revision=4,state='recording',verification='pending',received_ns=2))
         self.assertTrue(model.apply_status(host_session_id='h',trial_id='t',revision=5,state='saved',verification='passed',received_ns=3))
         self.assertFalse(model.apply_status(host_session_id='new-host',trial_id='t',revision=2,state='recording',verification='pending',received_ns=4))
+
+    @unittest.skipIf(s is None, 'missing state implementation')
+    def test_replacement_host_can_prepare_explicit_new_trial_after_saved(self):
+        model=s.TrialModel();model.begin_request('r1','t1')
+        model.apply_status(host_session_id='h1',trial_id='t1',revision=4,state='saved',verification='passed',received_ns=1)
+        model.begin_request('r2','t2')
+        self.assertTrue(model.apply_status(host_session_id='h2',trial_id='t2',revision=1,state='preparing',verification='pending',received_ns=2))
+        self.assertTrue(model.apply_status(host_session_id='h2',trial_id='t2',revision=2,state='recording',verification='pending',received_ns=3))
+        self.assertFalse(model.apply_status(host_session_id='h3',trial_id='t2',revision=1,state='preparing',verification='pending',received_ns=4))
+        self.assertFalse(model.apply_status(host_session_id='h3',trial_id='t2',revision=2,state='recording',verification='pending',received_ns=5))

@@ -29,10 +29,10 @@ class MessageType(IntEnum):
     PONG = 4
     HEALTH = 5
     POSES = 6
-    PRESSURES = 7
+    PRESSURE = 7
     TRIGGER = 8
-    CLOCK = 9
-    TRIAL_REQUEST = 10
+    BLE_CLOCK = 9
+    TRIAL_COMMAND = 10
     TRIAL_STATUS = 11
 
 
@@ -141,15 +141,17 @@ SCHEMAS = {
                        capabilities=arr(CAPABILITY,0,32),thermal_state=choice('nominal','fair','serious','critical','unknown')),
                   optional=('capabilities','thermal_state')),
     'POSES': obj(dict(session_id=STRING,world_epoch_id=STRING,samples=arr(POSE,1,MAX_BATCH))),
-    'PRESSURES': obj(dict(**SENSOR_ID,samples=arr(PRESSURE,1,MAX_BATCH))),
+    'PRESSURE': obj(dict(**SENSOR_ID,samples=arr(PRESSURE,1,MAX_BATCH))),
     'TRIGGER': obj(dict(**SENSOR_ID,sequence=UINT,raw_sequence=dict(type='integer',minimum=0,maximum=2**32-1),
         source_time_us=UINT,phone_receive_ns=UINT,pressed=BOOL,event=choice('transition','heartbeat'))),
-    'CLOCK': obj(dict(link=choice('ble','usb'),exchange_id=STRING,source_id=STRING,epoch_id=STRING,
+    'BLE_CLOCK': obj(dict(link=choice('ble','usb'),exchange_id=STRING,source_id=STRING,epoch_id=STRING,
         t1_ns=UINT,t2_ns=UINT,t3_ns=UINT,t4_ns=UINT,
         mapping=obj(dict(valid=BOOL,scale=nullable(NUMBER),offset_ns=nullable(NUMBER),uncertainty_ns=nullable(TIME))))),
-    'TRIAL_REQUEST': dict(anyOf=list(REQUESTS.values())),
+    'TRIAL_COMMAND': dict(anyOf=list(REQUESTS.values())),
     'TRIAL_STATUS': obj(dict(host_session_id=STRING,host_time_ns=UINT,request_id=nullable(STRING),trial_id=nullable(STRING),
         revision=UINT,state=choice('idle','preparing','recording','finalizing','saved','incomplete'),ready=BOOL,
+        profile=nullable(choice('full','core')),required_streams=arr(STREAM,0,32),missing_modalities=arr(STREAM,0,32),
+        missing_required_streams=arr(STREAM,0,32),
         reason=nullable(TEXT),bag_path=nullable(STRING),verification=choice('pending','passed','failed'),
         counters=arr(COUNTER,0,32))),
 }
@@ -167,6 +169,7 @@ def _finite(value, depth=0):
     elif type(value) is list:
         for child in value: _finite(child,depth+1)
     elif type(value) is float: _require(math.isfinite(value),'nonfinite JSON')
+    elif type(value) is int: _require(-(2**63) <= value <= U64_MAX,'integer token outside signed/unsigned 64-bit domain')
     else: _require(value is None or type(value) in (str,int,bool),'invalid JSON value')
 
 
@@ -199,7 +202,9 @@ def _schema(value, schema, path='$'):
 
 
 def _pose(meta):
-    _require(abs(math.hypot(*meta['quaternion_xyzw'])-1) <= 1e-3,'quaternion must be normalized')
+    try: norm = math.hypot(*meta['quaternion_xyzw'])
+    except (OverflowError, ValueError) as exc: raise ProtocolError('invalid quaternion magnitude') from exc
+    _require(math.isfinite(norm) and abs(norm-1) <= 1e-3,'quaternion must be normalized')
     _require(meta['tracking_state'] != 'not_available' or not meta['pose_valid'],'unavailable valid pose')
 
 
@@ -224,8 +229,8 @@ def validate_metadata(kind, metadata, payload_length=0):
     if kind == MessageType.POSES:
         for sample in metadata['samples']: _pose(sample)
         _require(all(a['frame_seq'] < b['frame_seq'] for a,b in zip(metadata['samples'],metadata['samples'][1:])), 'pose batch order')
-    if kind in (MessageType.PRESSURES,MessageType.TRIGGER):
-        samples = metadata['samples'] if kind == MessageType.PRESSURES else [metadata]
+    if kind in (MessageType.PRESSURE,MessageType.TRIGGER):
+        samples = metadata['samples'] if kind == MessageType.PRESSURE else [metadata]
         for sample in samples: _require(sample['sequence'] % 2**32 == sample['raw_sequence'],'raw sequence mismatch')
         _require(all(a['sequence'] < b['sequence'] for a,b in zip(samples,samples[1:])), 'pressure batch order')
     for key, fields in [('counters',('stream_id','source_id','epoch_id')),('fences',('stream_id',))]:
@@ -235,7 +240,7 @@ def validate_metadata(kind, metadata, payload_length=0):
         end = -1
         for gap in counter['missing_ranges']:
             _require(end <= gap['start'] < gap['end_exclusive'],'invalid/overlapping missing range'); end = gap['end_exclusive']
-    if kind == MessageType.CLOCK:
+    if kind == MessageType.BLE_CLOCK:
         mapping = metadata['mapping']
         _require(metadata['t3_ns'] >= metadata['t2_ns'] and metadata['t4_ns'] >= metadata['t1_ns'],'invalid exchange ordering')
         if mapping['valid']:
@@ -243,7 +248,7 @@ def validate_metadata(kind, metadata, payload_length=0):
     for capability in metadata.get('capabilities',[]):
         _require(capability['available'] or bool(capability['reason']),'unavailable capability needs reason')
         _require(not capability['available'] or (capability['source_id'] is not None and capability['epoch_id'] is not None),'available capability needs source identity')
-    if kind == MessageType.TRIAL_REQUEST and metadata['action'] == 'prepare':
+    if kind == MessageType.TRIAL_COMMAND and metadata['action'] == 'prepare':
         snap = metadata['snapshot']; _unique(snap['capabilities'],('stream_id',))
         required = FULL_REQUIRED_STREAMS if snap['profile'] == 'full' else CORE_REQUIRED_STREAMS
         _require(set(required) <= set(snap['required_streams']),'profile missing required inventory')
@@ -259,6 +264,18 @@ def validate_metadata(kind, metadata, payload_length=0):
             cal = snap['calibration']; _unique(cal['chambers'],('sensor_index',)); _unique(cal['chambers'],('sector_index',))
             _require(all(c['seal_on_kpa_abs'] < c['seal_off_kpa_abs'] for c in cal['chambers']),'invalid calibration thresholds')
     if kind == MessageType.TRIAL_STATUS:
+        required=metadata['required_streams']; missing=metadata['missing_modalities']; unavailable=metadata['missing_required_streams']; profile=metadata['profile']
+        _require(len(set(required)) == len(required) and len(set(missing)) == len(missing) and len(set(unavailable)) == len(unavailable),'duplicate inventory streams')
+        _require(not set(required) & set(missing),'required modality missing')
+        _require(set(unavailable) <= set(required),'unavailable stream must be required')
+        if metadata['state'] in ('recording','saved'):
+            _require(not unavailable,'recording/saved assurance requires all required streams')
+        if profile is None:
+            _require(metadata['state'] == 'idle' and not required and not missing and not unavailable,'unselected profile only allowed for empty idle inventory')
+        else:
+            mandatory=FULL_REQUIRED_STREAMS if profile == 'full' else CORE_REQUIRED_STREAMS
+            _require(set(mandatory) <= set(required),'status profile missing required inventory')
+            _require(profile != 'core' or 'ultrawide' in missing,'core status declares ultrawide missing')
         _require(metadata['state'] == 'idle' or metadata['trial_id'] is not None,'missing active trial ID')
         if metadata['state'] == 'saved':
             _require(metadata['verification'] == 'passed' and metadata['bag_path'] is not None,'saved requires verified bag')

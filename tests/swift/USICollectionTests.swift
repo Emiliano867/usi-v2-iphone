@@ -91,7 +91,7 @@ final class USICollectionTests: XCTestCase {
     }
 
     func testBeginCannotOmitFences() {
-        XCTAssertThrowsError(try USICollectionWire.encode(type:.trialRequest,
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.trialCommand,
             metadata:["action":"begin","request_id":"r","trial_id":"t","expected_revision":2]))
     }
 
@@ -107,7 +107,7 @@ final class USICollectionTests: XCTestCase {
     func testEverySharedVectorRequiredFieldsAndFrameSlices() throws {
         let directory=URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fixtures")
         let urls=try FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil)
-            .filter { $0.lastPathComponent.hasPrefix("collection_") && $0.pathExtension == "hex" }
+            .filter { $0.lastPathComponent.hasPrefix("collection_") && !$0.lastPathComponent.hasPrefix("collection_malformed_") && $0.pathExtension == "hex" }
         XCTAssertGreaterThanOrEqual(urls.count,14)
         for url in urls {
             let wire=try fixture(url), packet=try USICollectionWire.decode(wire)
@@ -134,18 +134,18 @@ final class USICollectionTests: XCTestCase {
     }
     func testBoundedSensorBatchesDuplicateJSONAndStreamingRead() throws {
         let directory=URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fixtures")
-        var meta=try USICollectionWire.decode(fixture(directory.appendingPathComponent("collection_pressures.hex"))).metadata
+        var meta=try USICollectionWire.decode(fixture(directory.appendingPathComponent("collection_pressure.hex"))).metadata
         var sample=(meta["samples"] as! [[String:Any]])[0]
         sample["sequence"]=UInt64(1)<<32; sample["raw_sequence"]=0; meta["samples"]=[sample]
-        XCTAssertNoThrow(try USICollectionWire.encode(type:.pressures,metadata:meta))
+        XCTAssertNoThrow(try USICollectionWire.encode(type:.pressure,metadata:meta))
         sample["raw_sequence"]=1;meta["samples"]=[sample]
-        XCTAssertThrowsError(try USICollectionWire.encode(type:.pressures,metadata:meta))
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.pressure,metadata:meta))
         sample["raw_sequence"]=0;sample["sequence"]=true;meta["samples"]=[sample]
-        XCTAssertThrowsError(try USICollectionWire.encode(type:.pressures,metadata:meta))
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.pressure,metadata:meta))
         sample["sequence"]=0;sample["pressure_centi_pa"]=[0,0,Double.nan];meta["samples"]=[sample]
-        XCTAssertThrowsError(try USICollectionWire.encode(type:.pressures,metadata:meta))
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.pressure,metadata:meta))
         sample["pressure_centi_pa"]=[0,0,0];meta["samples"]=Array(repeating:sample,count:65)
-        XCTAssertThrowsError(try USICollectionWire.encode(type:.pressures,metadata:meta))
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.pressure,metadata:meta))
         let body=Data(#"{"role":"host","role":"phone","protocol_version":2}"#.utf8)
         var duplicate=Data([85,83,73,50,0,2,0,1,0,0,0,UInt8(body.count),0,0,0,0]);duplicate.append(body)
         XCTAssertThrowsError(try USICollectionWire.decode(duplicate))
@@ -170,6 +170,75 @@ final class USICollectionTests: XCTestCase {
         XCTAssertFalse(try trial.applyStatus(hostSessionID:"h",trialID:"t",revision:4,state:.recording,verification:.pending,receivedNs:2))
         try trial.applyStatus(hostSessionID:"h",trialID:"t",revision:5,state:.saved,verification:.passed,receivedNs:3)
         XCTAssertFalse(try trial.applyStatus(hostSessionID:"new-host",trialID:"t",revision:2,state:.recording,verification:.pending,receivedNs:4))
+    }
+
+    func testCanonicalNamesKeepWireIDs() {
+        XCTAssertEqual(USICollectionMessageType(rawValue:7)?.schemaName,"PRESSURE")
+        XCTAssertEqual(USICollectionMessageType(rawValue:9)?.schemaName,"BLE_CLOCK")
+        XCTAssertEqual(USICollectionMessageType(rawValue:10)?.schemaName,"TRIAL_COMMAND")
+    }
+    func testStatusInventoryRecoveryAndValidation() throws {
+        let directory=URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fixtures")
+        var full=try USICollectionWire.decode(fixture(directory.appendingPathComponent("collection_status.hex"))).metadata
+        full["profile"]="full";full["required_streams"]=USICollectionWire.fullRequiredStreams;full["missing_modalities"]=[String]()
+        XCTAssertNoThrow(try USICollectionWire.encode(type:.trialStatus,metadata:full))
+        var core=full;core["profile"]="core";core["required_streams"]=USICollectionWire.coreRequiredStreams;core["missing_modalities"]=["ultrawide"]
+        XCTAssertNoThrow(try USICollectionWire.encode(type:.trialStatus,metadata:core))
+        var bad=core;bad["missing_modalities"]=[String]()
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.trialStatus,metadata:bad))
+        bad=full;bad["required_streams"]=["ultrawide"]
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.trialStatus,metadata:bad))
+        bad=full;bad["missing_modalities"]=["ultrawide"]
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.trialStatus,metadata:bad))
+        for field in ["profile","required_streams","missing_modalities"] {
+            bad=full;bad.removeValue(forKey:field)
+            XCTAssertThrowsError(try USICollectionWire.encode(type:.trialStatus,metadata:bad))
+        }
+    }
+
+    func testStatusReportsUnavailableRequiredStreamsSeparatelyFromProfileExclusions() throws {
+        let directory=URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fixtures")
+        var preparing=try USICollectionWire.decode(fixture(directory.appendingPathComponent("collection_status.hex"))).metadata
+        preparing["state"]="preparing";preparing["profile"]="full"
+        preparing["required_streams"]=USICollectionWire.fullRequiredStreams;preparing["missing_modalities"]=[String]()
+        preparing["reason"]="required sources unavailable"
+        preparing["missing_required_streams"]=["ultrawide","pressures"]
+        XCTAssertNoThrow(try USICollectionWire.encode(type:.trialStatus,metadata:preparing))
+        XCTAssertEqual(preparing["missing_modalities"] as? [String],[])
+        var incomplete=preparing;incomplete["state"]="incomplete";incomplete["verification"]="failed"
+        incomplete["reason"]="required sources remained unavailable"
+        XCTAssertNoThrow(try USICollectionWire.encode(type:.trialStatus,metadata:incomplete))
+        var invalidSubset=preparing;invalidSubset["missing_required_streams"]=["audio"]
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.trialStatus,metadata:invalidSubset))
+        var recording=preparing;recording["state"]="recording";recording["missing_required_streams"]=["pressures"]
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.trialStatus,metadata:recording))
+        var saved=recording;saved["state"]="saved";saved["verification"]="passed";saved["bag_path"]="/data/trial-A"
+        XCTAssertThrowsError(try USICollectionWire.encode(type:.trialStatus,metadata:saved))
+    }
+    func testMalformedOversizedNumbersUseProtocolError() throws {
+        let directory=URL(fileURLWithPath:#filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fixtures")
+        let poseWire=try fixture(directory.appendingPathComponent("collection_poses.hex"))
+        let original=try USICollectionWire.decode(poseWire).metadata
+        for value: NSNumber in [NSNumber(value:UInt64.max),NSNumber(value:1e200),NSNumber(value:Double.greatestFiniteMagnitude)] {
+            var good=original;var samples=good["samples"] as! [[String:Any]]
+            samples[0]["arkit_timestamp_s"]=value;good["samples"]=samples
+            XCTAssertNoThrow(try USICollectionWire.decode(USICollectionWire.encode(type:.poses,metadata:good)))
+        }
+        for name in ["quaternion","timestamp","integer_domain"] {
+            let wire=try fixture(directory.appendingPathComponent("collection_malformed_"+name+".hex"))
+            XCTAssertThrowsError(try USICollectionWire.decode(wire)) { error in
+                XCTAssertTrue(error is USICollectionError,"Expected protocol error, received \(error)")
+            }
+        }
+    }
+    func testNewTrialMayBindReplacementHostAfterSaved() throws {
+        var trial=USITrialModel();try trial.beginRequest(requestID:"r1",trialID:"t1")
+        try trial.applyStatus(hostSessionID:"h1",trialID:"t1",revision:4,state:.saved,verification:.passed,receivedNs:1)
+        try trial.beginRequest(requestID:"r2",trialID:"t2")
+        XCTAssertTrue(try trial.applyStatus(hostSessionID:"h2",trialID:"t2",revision:1,state:.preparing,verification:.pending,receivedNs:2))
+        XCTAssertTrue(try trial.applyStatus(hostSessionID:"h2",trialID:"t2",revision:2,state:.recording,verification:.pending,receivedNs:3))
+        XCTAssertFalse(try trial.applyStatus(hostSessionID:"h3",trialID:"t2",revision:1,state:.preparing,verification:.pending,receivedNs:4))
+        XCTAssertFalse(try trial.applyStatus(hostSessionID:"h3",trialID:"t2",revision:2,state:.recording,verification:.pending,receivedNs:5))
     }
 
 }

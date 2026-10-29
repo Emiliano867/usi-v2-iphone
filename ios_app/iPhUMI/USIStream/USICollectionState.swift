@@ -210,6 +210,7 @@ struct USITrialModel {
         try collectionCheck(!requestID.isEmpty && !trialID.isEmpty,"invalid request")
         if requestID == self.requestID { try collectionCheck(trialID == self.trialID,"request reused"); return }
         try collectionCheck([.notConnected,.idle,.saved,.incomplete].contains(state),"trial already active")
+        if trialID != self.trialID { hostSessionID=nil; retiredHosts.removeAll() }
         self.requestID=requestID; self.trialID=trialID; state = .preparing; revision=nil; receivedNs=nil; verification = .pending
     }
     @discardableResult
