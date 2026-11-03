@@ -120,3 +120,26 @@ final class USIBLETests: XCTestCase {
         XCTAssertNil(try r.feed(first(11), receivedNs: 500_000_003))
     }
 }
+
+extension USIBLETests {
+    func testProgressSeedAfterWrap() throws {
+        var tracker = try USIBLEProgressTracker(capacity: 3)
+        XCTAssertNil(try tracker.receive(raw: UInt32.max))
+        XCTAssertNil(try tracker.receive(raw: 5))
+        XCTAssertEqual(try tracker.seed(nextSourceCount: (UInt64(1) << 32) + 6), [UInt64(UInt32.max), (UInt64(1) << 32) + 5])
+        XCTAssertEqual(try tracker.receive(raw: 6), (UInt64(1) << 32) + 6)
+        XCTAssertThrowsError(try tracker.receive(raw: 6))
+    }
+    func testProgressSeedRejectsAmbiguityAndBounds() throws {
+        var tracker = try USIBLEProgressTracker(capacity: 1)
+        XCTAssertNil(try tracker.receive(raw: 10))
+        XCTAssertThrowsError(try tracker.receive(raw: 11))
+        XCTAssertThrowsError(try tracker.seed(nextSourceCount: 10))
+        XCTAssertEqual(try tracker.seed(nextSourceCount: 11), [10])
+        XCTAssertThrowsError(try tracker.seed(nextSourceCount: 11))
+        var empty = try USIBLEProgressTracker(capacity: 2)
+        XCTAssertEqual(try empty.seed(nextSourceCount: (UInt64(1) << 32) + 9), [])
+        XCTAssertEqual(try empty.receive(raw: 9), (UInt64(1) << 32) + 9)
+        XCTAssertThrowsError(try empty.receive(raw: 8))
+    }
+}

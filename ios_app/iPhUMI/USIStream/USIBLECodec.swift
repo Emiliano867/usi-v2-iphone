@@ -173,3 +173,47 @@ struct USIBLEReassembler {
         }
     }
 }
+
+/// Single-owner source identity bootstrap. Buffer notifications until the ordered
+/// CLOCK barrier supplies the actual next acquisition sequence for this boot.
+/// A caller must discard this instance on disconnect or source epoch change.
+struct USIBLEProgressTracker {
+    private static let modulus: UInt64 = 1 << 32
+    private static let half: UInt64 = 1 << 31
+    private let capacity: Int
+    private var buffered: [UInt32] = []
+    private var next: UInt64?
+    init(capacity: Int) throws {
+        guard capacity > 0 else { throw USIBLEError.invalid }
+        self.capacity = capacity
+    }
+    mutating func receive(raw: UInt32) throws -> UInt64? {
+        guard let floor = next else {
+            guard buffered.count < capacity else { throw USIBLEError.invalid }
+            buffered.append(raw)
+            return nil
+        }
+        let delta = (UInt64(raw) &+ Self.modulus &- (floor % Self.modulus)) % Self.modulus
+        guard delta < Self.half else { throw USIBLEError.invalid }
+        let (sequence, overflow) = floor.addingReportingOverflow(delta)
+        guard !overflow, sequence < UInt64.max else { throw USIBLEError.invalid }
+        next = sequence + 1
+        return sequence
+    }
+    mutating func seed(nextSourceCount: UInt64) throws -> [UInt64] {
+        guard next == nil else { throw USIBLEError.invalid }
+        var result = [UInt64](repeating: 0, count: buffered.count)
+        var boundary = nextSourceCount
+        for i in buffered.indices.reversed() {
+            guard boundary > 0 else { throw USIBLEError.invalid }
+            let latest = boundary - 1
+            let distance = (latest % Self.modulus &+ Self.modulus &- UInt64(buffered[i])) % Self.modulus
+            guard distance < Self.half, distance <= latest else { throw USIBLEError.invalid }
+            result[i] = latest - distance
+            boundary = result[i]
+        }
+        buffered.removeAll()
+        next = nextSourceCount
+        return result
+    }
+}
