@@ -111,10 +111,41 @@ def _direct_mcap_roundtrip(tmp_path):
     assert count==len(reopened)
     assert types['/pressure_timing']=='std_msgs/msg/UInt64MultiArray'
     assert types['/trigger_timing']=='std_msgs/msg/UInt64MultiArray'
-    assert timing['/pressure_timing'][1:5]==[100,2000000,1,7]
+    assert timing['/pressure_timing'][1:5]==[100,2000000,1,0]
     assert timing['/trigger_timing'][1:4]==[111,2000000,1]
     assert timing['/pressure_timing'][5]!=0  # stable numeric surrogate; raw boot string is in typed record
     assert (tmp_path/'generated_fixture'/'metadata.yaml').exists()
+
+
+def test_all_pressure_quality_masks_survive_legacy_mcap_roundtrip(tmp_path):
+    from std_msgs.msg import UInt64MultiArray
+    pressure=example('collection_pressure')
+    store=JazzyMcapStore(); writer=BoundedRecorder(store,tmp_path/'masks',capacity=64)
+    writer.open()
+    for valid_mask in range(8):
+        sample=pressure['samples'][0].copy()
+        sample['quality_mask']=valid_mask
+        sample['sequence']=valid_mask
+        sample['raw_sequence']=valid_mask
+        meta={**pressure,'samples':[sample]}
+        for record in records_for_packet(Packet(MessageType.PRESSURE,meta),valid_mask+1,2_000_000+valid_mask):
+            assert writer.submit(record)
+    writer.close()
+    reopened=store.scan()
+    timing=[r for r in reopened if r.topic=='/pressure_timing']
+    typed=[r for r in reopened if r.topic=='/usi_collection/pressures']
+    assert len(timing)==len(typed)==8
+    import rosbag2_py
+    reader=rosbag2_py.SequentialReader()
+    reader.open(rosbag2_py.StorageOptions(uri=str(tmp_path/'masks'),storage_id='mcap'),
+                rosbag2_py.ConverterOptions('cdr','cdr'))
+    observed=[]
+    while reader.has_next():
+        topic,data,_=reader.read_next()
+        if topic=='/pressure_timing':
+            observed.append(deserialize_message(data,UInt64MultiArray).data[4])
+    reader.close()
+    assert observed==[7-i for i in range(8)]
 
 
 @pytest.mark.parametrize('omitted_kind,expected_state',[

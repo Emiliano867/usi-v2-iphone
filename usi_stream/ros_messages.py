@@ -99,7 +99,8 @@ def _legacy_timing(stream,sample,meta,wall,bridge_counts):
     number=bridge_counts.get(stream,0)
     bridge_counts[stream]=number+1
     values=[number,sample['source_time_us'],wall,1]
-    if stream=='pressures': values.append(sample['quality_mask'])
+    # Typed v2 uses set bit = valid; audited legacy timing uses set bit = error.
+    if stream=='pressures': values.append((~sample['quality_mask']) & 7)
     values.extend((_legacy_boot_number(meta['boot_id']),sample['raw_sequence']))
     message=UInt64MultiArray(); message.data=values
     topic='/pressure_timing' if stream=='pressures' else '/trigger_timing'

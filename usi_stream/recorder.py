@@ -188,7 +188,7 @@ class JazzyMcapStore:
                         raise ValueError('legacy trigger value mismatch')
                 else:
                     expected=[original['source_time_us'],parent.stamp_ns,1]
-                    if topic=='/pressure_timing': expected.append(original['quality_mask'])
+                    if topic=='/pressure_timing': expected.append((~original['quality_mask']) & 7)
                     expected.extend((_legacy_boot_number(parent.epoch_id),original['raw_sequence']))
                     if len(legacy['data'])!=len(expected)+1 or list(legacy['data'])[1:]!=expected:
                         raise ValueError('legacy timing value mismatch: '+topic)
