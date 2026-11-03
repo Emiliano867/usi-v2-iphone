@@ -10,6 +10,12 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
     private let encodeQueue = DispatchQueue(label: "usi.arkit.encode", qos: .userInitiated)
     private let encoder = USIFrameEncoder()
     private let usb = USIUSBServer()
+    private lazy var ble = USIBLECentral(queue: captureQueue)
+    private var sensors = USILiveSensorState() // captureQueue only
+    private var sensorTimer: DispatchSourceTimer?
+    private var sensorLink = "Bluetooth · starting"
+    private var sensorUIPending = false
+    private var sensorDetails = "Bluetooth telemetry has not started." // main queue
     private let content = USICollectionView(frame: .zero)
     private var nativePreview: ARView?
     private weak var diagnostics: USIDiagnosticsViewController?
@@ -115,7 +121,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         let buildNumber = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "?"
         let revision = (Bundle.main.object(forInfoDictionaryKey: "USIUIRevision") as? String) ?? "local"
         let defaults = UserDefaults.standard
-        diagnostics?.details = "Session: \(defaults.string(forKey: "usi.session") ?? "Untitled")\nTask: \(defaults.string(forKey: "usi.task") ?? "Not set")\nGripper: \(defaults.string(forKey: "usi.gripper") ?? "Not set")\nCalibration label: \(defaults.string(forKey: "usi.calibration") ?? "Not set")\n\n\(usbStatus)\n\n\(captureDetails.diagnostics)\n\nDATA STREAMS\nMain RGB: live ARKit, native preview\nDepth / confidence: captured when supplied by ARKit; depth visualization 0–2 m\nCamera pose / tracking / intrinsics: included in USB camera stream\nUltrawide: unavailable in this ARKit capture path\nPressure C1/C2/C3: not connected\nTrigger / suction: not connected\nSeal calibration: not connected; sectors remain gray\nTrial metadata / timing / MCAP verification: recorder integration pending\n\nTrial: not recording · saved bag: unavailable\nCamera pose only; tool calibration required.\n\nSuction UMI v2 · UI build · version \(version) (\(buildNumber))"
+        diagnostics?.details = "Session: \(defaults.string(forKey: "usi.session") ?? "Untitled")\nTask: \(defaults.string(forKey: "usi.task") ?? "Not set")\nGripper: \(defaults.string(forKey: "usi.gripper") ?? "Not set")\nCalibration label: \(defaults.string(forKey: "usi.calibration") ?? "Not set")\n\n\(usbStatus)\n\n\(captureDetails.diagnostics)\n\nBLUETOOTH TELEMETRY\n\(sensorDetails)\n\nDATA STREAMS\nMain RGB: live ARKit, native preview\nDepth / confidence: captured when supplied by ARKit; depth visualization 0–2 m\nCamera pose / tracking / intrinsics: included in USB camera stream\nUltrawide: unavailable in this ARKit capture path\nPressure C1/C2/C3 and trigger: live BLE reception when rig is subscribed\nSuction: trigger-derived command state; no measured pump feedback\nSeal calibration: not connected; sectors remain gray\nSensor USB forwarding and host trial recording: integration pending\n\nTrial: not recording · saved bag: unavailable\nCamera pose only; tool calibration required.\n\nSuction UMI v2 · live sensors · version \(version) (\(buildNumber))"
         if let diagnostics { diagnostics.details += "\nSource revision: \(revision)" }
     }
 
@@ -132,6 +138,10 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             self.session.pause()
             self.pending = nil
             self.usb.stop()
+            self.sensorTimer?.cancel()
+            self.sensorTimer = nil
+            self.ble.stop()
+            self.publishSensorUpdate()
         }
     }
 
@@ -168,6 +178,54 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             self.usb.resetSession(self.sessionID)
             self.running = true
             self.session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+            self.startSensors()
+        }
+    }
+
+    private func startSensors() {
+        dispatchPrecondition(condition: .onQueue(captureQueue))
+        guard sensorTimer == nil else { return }
+        ble.onStatus = { [weak self] in self?.sensorLink = $0 }
+        ble.onSubscribed = { [weak self] in self?.sensors.connect() }
+        ble.onDisconnected = { [weak self] in self?.sensors.disconnect() }
+        ble.onRejected = { [weak self] in self?.sensors.reject() }
+        ble.onEvent = { [weak self] event, firstReceivedNs, _ in
+            guard let self else { return }
+            do { try self.sensors.receive(event, receivedNs: firstReceivedNs) }
+            catch {
+                self.sensors.reject()
+                self.ble.reconnectAfterFailure("Bluetooth · source changed; reconnecting")
+            }
+        }
+        let timer = DispatchSource.makeTimerSource(queue: captureQueue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(100), leeway: .milliseconds(20))
+        timer.setEventHandler { [weak self] in self?.publishSensorUpdate() }
+        sensorTimer = timer
+        ble.start()
+        timer.resume()
+    }
+
+    private func publishSensorUpdate() {
+        dispatchPrecondition(condition: .onQueue(captureQueue))
+        // At most one display snapshot waits for main; no UI block is queued per sample.
+        guard !sensorUIPending else { return }
+        sensorUIPending = true
+        let snapshot = sensors.snapshot(nowNs: DispatchTime.now().uptimeNanoseconds)
+        let status = sensorLink
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.visible {
+                let states: [USISealView.State] = snapshot.seal.states.map {
+                    $0 == .sealed ? .sealed : $0 == .unsealed ? .unsealed : .unknown
+                }
+                let suction = snapshot.suction == .on ? "ON" : snapshot.suction == .off ? "OFF" : "—"
+                self.content.applySensors(pressures: snapshot.seal.pressuresKPaAbs, states: states,
+                    suctionText: "Suction \(suction)\nTrigger-derived · read-only")
+                self.content.setSensorStatus(status)
+                self.sensorDetails = "\(status)\nPressure received this connection: \(snapshot.pressureSamples)\nTrigger received this connection: \(snapshot.triggerSamples)\nObserved sequence gaps: pressure \(snapshot.missingPressureSamples), trigger \(snapshot.missingTriggerSamples)\nDuplicate samples: \(snapshot.duplicates)\nRejected samples/messages: \(snapshot.rejected)\nPressure expires after 250 ms; trigger after 1 s.\nC1/C2/C3: sensor channels 0/5/6; physical chamber map needs calibration.\nFresh numeric pressures can be shown without calibrated seal colors."
+                self.updateDiagnostics()
+            }
+            self.captureQueue.async { [weak self] in self?.sensorUIPending = false }
         }
     }
 

@@ -31,6 +31,8 @@
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>This application will use the camera for Augmented Reality.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Connect to the suction gripper to display and collect its pressure and trigger measurements.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>This application will use local networking to discover nearby iPhones for multi-gripper support.</string>
 	<key>NSMicrophoneUsageDescription</key>

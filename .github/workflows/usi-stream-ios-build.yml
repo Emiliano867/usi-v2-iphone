@@ -47,10 +47,12 @@ jobs:
             python3 --version
           } | tee artifacts/provenance.txt
 
-      - name: Test Python protocol and USB receiver
+      - name: Test Python protocols and USB receiver
         run: |
           set -euo pipefail
-          python3 -B -m unittest discover -s tests -p 'test_usi_*.py' -v 2>&1 | tee artifacts/python-tests.log
+          python3 -m venv "$RUNNER_TEMP/usi-python"
+          "$RUNNER_TEMP/usi-python/bin/python" -m pip install 'pytest==8.3.5'
+          "$RUNNER_TEMP/usi-python/bin/python" -B -m pytest tests/test_*.py -q 2>&1 | tee artifacts/python-tests.log
 
       - name: Test Swift framing against the shared wire fixture
         run: |
@@ -107,17 +109,17 @@ jobs:
           ditto "$app" "$RUNNER_TEMP/usi-package/Payload/iPhUMI.app"
           (
             cd "$RUNNER_TEMP/usi-package"
-            ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/artifacts/Suction-UMI-v2-camera-layout.ipa"
+            ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/artifacts/Suction-UMI-v2-live-sensors.ipa"
           )
-          unzip -t artifacts/Suction-UMI-v2-camera-layout.ipa > artifacts/ipa-integrity.txt
-          shasum -a 256 artifacts/Suction-UMI-v2-camera-layout.ipa > artifacts/ipa-sha256.txt
-          printf '%s\n' 'UI-first update. Native RGB/depth preview and existing USB camera stream. Pressure/trigger and host trial recording are not connected in this build. Native device behavior and actual rates need phone validation.' > artifacts/STATUS.txt
+          unzip -t artifacts/Suction-UMI-v2-live-sensors.ipa > artifacts/ipa-integrity.txt
+          shasum -a 256 artifacts/Suction-UMI-v2-live-sensors.ipa > artifacts/ipa-sha256.txt
+          printf '%s\n' 'Live-sensors update. Approved camera layout with CoreBluetooth pressure/trigger reception and stale-data clearing. Requires the separate private BLE firmware on the rig. Seal calibration, sensor USB forwarding, and host trial recording are not connected in this app build. Actual BLE reception and rates require phone/rig validation.' > artifacts/STATUS.txt
 
       - name: Retain diagnostic evidence and unsigned IPA
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: suction-umi-v2-camera-layout-${{ github.run_id }}
+          name: suction-umi-v2-live-sensors-${{ github.run_id }}
           path: artifacts/
           if-no-files-found: warn
           retention-days: 3

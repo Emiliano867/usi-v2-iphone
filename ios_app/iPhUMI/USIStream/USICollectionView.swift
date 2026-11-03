@@ -69,6 +69,7 @@ final class USICollectionView: UIView {
     private let pressure = USICollectionView.label("C1  —\nC2  —\nC3  —", style: .body)
     private let sealStatus = USICollectionView.label("Seal unknown · awaiting sensors", style: .caption1)
     private let suction = USICollectionView.label("Suction —\nAwaiting trigger", style: .subheadline)
+    private let sensorStatus = USICollectionView.label("Bluetooth · starting", style: .caption1)
     private let trial = USICollectionView.label("Trial 001 · Not recording", style: .subheadline)
     private let elapsed = USICollectionView.label("Time — · Recorder not connected", style: .caption1)
     private let session = USICollectionView.label("Session / Task", style: .caption1)
@@ -177,7 +178,7 @@ final class USICollectionView: UIView {
         let depthTile = Self.stack([depthThumbnail, depth], spacing: 0)
         let thumbs = Self.stack([depthTile, wide], axis: .horizontal)
         thumbs.distribution = .fillEqually
-        let status = Self.stack([readings, sealStatus, suction, cameraReadouts, thumbs])
+        let status = Self.stack([readings, sealStatus, suction, sensorStatus, cameraReadouts, thumbs])
         let statusScroll = UIScrollView()
         statusScroll.translatesAutoresizingMaskIntoConstraints = false
         statusScroll.addSubview(status)
@@ -264,6 +265,7 @@ final class USICollectionView: UIView {
         selectPreview()
     }
     func setUSBStatus(_ text: String) { link.text = text }
+    func setSensorStatus(_ text: String) { sensorStatus.text = text }
     func setSession(_ text: String) { session.text = text }
     func apply(_ details: USIPreviewDetails) {
         camera.text = "RGB + ARKit · \(details.cameraRate)\nTracking: \(details.tracking) · Depth: \(details.depth)"
