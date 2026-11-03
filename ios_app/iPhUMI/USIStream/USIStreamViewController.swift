@@ -1,6 +1,7 @@
 import ARKit
 import UIKit
 import simd
+import RealityKit
 
 /// A separate public-API ARKit path; stock collection and AVCapture deployment stay intact.
 final class USIStreamViewController: UIViewController, ARSessionDelegate {
@@ -9,7 +10,8 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
     private let encodeQueue = DispatchQueue(label: "usi.arkit.encode", qos: .userInitiated)
     private let encoder = USIFrameEncoder()
     private let usb = USIUSBServer()
-    private let content = USILiveView(frame: .zero)
+    private let content = USICollectionView(frame: .zero)
+    private var nativePreview: ARView?
     private weak var diagnostics: USIDiagnosticsViewController?
     private var usbStatus = "Starting USB"
     private var captureDetails = USIPreviewDetails.starting
@@ -32,7 +34,19 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         content.onHome = { [weak self] in self?.closePressed() }
-        content.onDiagnostics = { [weak self] in self?.showDiagnostics() }
+        content.onData = { [weak self] in self?.showDiagnostics() }
+        content.onSettings = { [weak self] in self?.showSettings() }
+        content.onStart = { [weak self] in
+            let alert = UIAlertController(title: "Recorder not connected",
+                message: "Trial recording is not connected in this UI build. Live camera streaming continues; no trial has been started.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            self?.present(alert, animated: true)
+        }
+        let cameraView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
+        cameraView.session = session
+        content.installNativePreview(cameraView)
+        nativePreview = cameraView
+        updateSessionLabel()
         usb.onStatus = { [weak self] text in
             guard let self else { return }
             self.usbStatus = text
@@ -56,6 +70,8 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // Inspecting Data or Settings must not stop the shared capture session.
+        guard isBeingDismissed || navigationController?.isBeingDismissed == true else { return }
         visible = false
         stopCapture()
     }
@@ -79,10 +95,28 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         present(controller, animated: !UIAccessibility.isReduceMotionEnabled)
     }
 
+    private func showSettings() {
+        guard presentedViewController == nil else { return }
+        let controller = USICollectionSettingsViewController()
+        controller.onSave = { [weak self] in self?.updateSessionLabel(); self?.updateDiagnostics() }
+        controller.modalPresentationStyle = .overFullScreen
+        present(controller, animated: !UIAccessibility.isReduceMotionEnabled)
+    }
+
+    private func updateSessionLabel() {
+        let defaults = UserDefaults.standard
+        let session = defaults.string(forKey: "usi.session") ?? "Untitled session"
+        let task = defaults.string(forKey: "usi.task") ?? "No task label"
+        content.setSession("\(session)\n\(task)")
+    }
+
     private func updateDiagnostics() {
         let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "?"
         let buildNumber = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "?"
-        diagnostics?.details = "\(usbStatus)\n\n\(captureDetails.diagnostics)\n\nPressure: unavailable in this build.\nHost recording: not reported.\nCamera pose only; tool calibration required.\n\nSuction UMI v2 · version \(version) (\(buildNumber))"
+        let revision = (Bundle.main.object(forInfoDictionaryKey: "USIUIRevision") as? String) ?? "local"
+        let defaults = UserDefaults.standard
+        diagnostics?.details = "Session: \(defaults.string(forKey: "usi.session") ?? "Untitled")\nTask: \(defaults.string(forKey: "usi.task") ?? "Not set")\nGripper: \(defaults.string(forKey: "usi.gripper") ?? "Not set")\nCalibration label: \(defaults.string(forKey: "usi.calibration") ?? "Not set")\n\n\(usbStatus)\n\n\(captureDetails.diagnostics)\n\nDATA STREAMS\nMain RGB: live ARKit, native preview\nDepth / confidence: captured when supplied by ARKit; depth visualization 0–2 m\nCamera pose / tracking / intrinsics: included in USB camera stream\nUltrawide: unavailable in this ARKit capture path\nPressure C1/C2/C3: not connected\nTrigger / suction: not connected\nSeal calibration: not connected; sectors remain gray\nTrial metadata / timing / MCAP verification: recorder integration pending\n\nTrial: not recording · saved bag: unavailable\nCamera pose only; tool calibration required.\n\nSuction UMI v2 · UI build · version \(version) (\(buildNumber))"
+        if let diagnostics { diagnostics.details += "\nSource revision: \(revision)" }
     }
 
     @objc private func backgrounded() { stopCapture() }
@@ -112,11 +146,6 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             guard let self else { return }
             if let expectedSession, self.session !== expectedSession { return }
             self.session.pause()
-            self.session.delegate = nil
-            let freshSession = ARSession()
-            freshSession.delegate = self
-            freshSession.delegateQueue = self.captureQueue
-            self.session = freshSession
             self.sessionID = UUID().uuidString
             if self.previewMailbox.reset(epoch: self.sessionID) { self.scheduleUIUpdate() }
             self.sequence = 0
@@ -128,7 +157,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             self.lastStatusTime = -.infinity
             let configuration = ARWorldTrackingConfiguration()
             if let format = ARWorldTrackingConfiguration.supportedVideoFormats
-                .filter({ $0.framesPerSecond == 30 })
+                .filter({ $0.framesPerSecond == 60 })
                 .min(by: { $0.imageResolution.width * $0.imageResolution.height < $1.imageResolution.width * $1.imageResolution.height }) {
                 configuration.videoFormat = format
             }
@@ -188,8 +217,9 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             let text = String(format: "Camera: %.1f FPS\nFrame: %llu\nTracking: %@\nThermal: %@\nXYZ: %.3f, %.3f, %.3f m\nEncode drops: %llu\nSession: %@",
                 fps, currentSequence, tracking.0, thermalDescription(), transform.columns.3.x, transform.columns.3.y,
                 transform.columns.3.z, encodeDrops, sessionID)
-            let details = USIPreviewDetails(tracking: trackingText, cameraRate: String(format: "%.1f FPS", fps),
-                depth: depth, diagnostics: "\(text)\nDepth: \(depth)", isCapturing: true)
+            let details = USIPreviewDetails(tracking: trackingText, cameraRate: String(format: "%.1f FPS · target 60", fps),
+                depth: depth, diagnostics: "\(text)\nDepth: \(depth)\nCapture target: 60 FPS; observed acquisition rate shown above.\nRGB USB JPEG size: up to 640 px wide. Depth preview updates with encoded frames (up to 10/s); source depth and native RGB are independent.\nSelected source: \(CVPixelBufferGetWidth(frame.capturedImage)) × \(CVPixelBufferGetHeight(frame.capturedImage))", isCapturing: true,
+                positionText: String(format: "Camera XYZ: %.3f / %.3f / %.3f m", transform.columns.3.x, transform.columns.3.y, transform.columns.3.z))
             if previewMailbox.offer(epoch: sessionID, details: details) { scheduleUIUpdate() }
         }
     }
@@ -212,7 +242,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
                         let sourceTime = snapshot.metadata["arkit_timestamp_s"] as? Double ?? 0
                         if sourceTime - self.lastPreviewTime >= 0.1 {
                             self.lastPreviewTime = sourceTime
-                            if self.previewMailbox.offer(epoch: snapshot.sessionID, jpeg: encoded.previewJPEG) {
+                            if self.previewMailbox.offer(epoch: snapshot.sessionID, depthPNG: encoded.depthPreviewPNG) {
                                 self.scheduleUIUpdate()
                             }
                         }
@@ -272,6 +302,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         DispatchQueue.main.async { [weak self] in
             guard let self, let update = self.previewMailbox.take(), self.visible else { return }
             let image = update.jpeg.flatMap { UIImage(data: $0) }
+            let depthImage = update.depthPNG.flatMap { UIImage(data: $0) }
             guard self.previewMailbox.isCurrent(update.epoch) else { return }
             if update.clear { self.content.preview.image = nil }
             if let details = update.details {
@@ -280,6 +311,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
                 self.updateDiagnostics()
             }
             if let image, self.captureDetails.isCapturing { self.content.preview.image = image }
+            if let depthImage, self.captureDetails.isCapturing { self.content.setDepthPreview(depthImage) }
         }
     }
 

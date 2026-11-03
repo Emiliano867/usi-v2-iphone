@@ -2,6 +2,11 @@ name: Suction UMI v2 iOS build
 
 on:
   workflow_dispatch:
+    inputs:
+      run_layout_checks:
+        description: 'Run slower simulator layout screenshots (optional)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -63,6 +68,7 @@ jobs:
           cp Podfile.lock ../artifacts/Podfile.lock
 
       - name: Check native landscape layout and larger text
+        if: ${{ inputs.run_layout_checks }}
         run: |
           set -euo pipefail
           bash tests/ios-layout/run.sh "$GITHUB_WORKSPACE/artifacts/layout" 2>&1 | tee artifacts/layout-tests.log
@@ -77,7 +83,8 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/usi-derived" \
             -archivePath "$RUNNER_TEMP/USIStream.xcarchive" \
             -resultBundlePath "$GITHUB_WORKSPACE/artifacts/USIStream.xcresult" \
-            CURRENT_PROJECT_VERSION="3.${GITHUB_RUN_NUMBER}" \
+            CURRENT_PROJECT_VERSION="4.${GITHUB_RUN_NUMBER}" \
+            USI_UI_REVISION="${GITHUB_SHA:0:7}" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
             2>&1 | tee "$GITHUB_WORKSPACE/artifacts/xcodebuild.log"
@@ -100,17 +107,17 @@ jobs:
           ditto "$app" "$RUNNER_TEMP/usi-package/Payload/iPhUMI.app"
           (
             cd "$RUNNER_TEMP/usi-package"
-            ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/artifacts/Suction-UMI-v2-unsigned.ipa"
+            ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/artifacts/Suction-UMI-v2-UI-first.ipa"
           )
-          unzip -t artifacts/Suction-UMI-v2-unsigned.ipa > artifacts/ipa-integrity.txt
-          shasum -a 256 artifacts/Suction-UMI-v2-unsigned.ipa > artifacts/ipa-sha256.txt
-          printf '%s\n' 'UNSIGNED custom G3 app: compilation/tests only. Phone signing, camera/pose streaming and hardware rates require on-device validation.' > artifacts/STATUS.txt
+          unzip -t artifacts/Suction-UMI-v2-UI-first.ipa > artifacts/ipa-integrity.txt
+          shasum -a 256 artifacts/Suction-UMI-v2-UI-first.ipa > artifacts/ipa-sha256.txt
+          printf '%s\n' 'UI-first update. Native RGB/depth preview and existing USB camera stream. Pressure/trigger and host trial recording are not connected in this build. Native device behavior and actual rates need phone validation.' > artifacts/STATUS.txt
 
       - name: Retain diagnostic evidence and unsigned IPA
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: suction-umi-v2-unsigned-${{ github.run_id }}
+          name: suction-umi-v2-UI-first-${{ github.run_id }}
           path: artifacts/
           if-no-files-found: warn
           retention-days: 3

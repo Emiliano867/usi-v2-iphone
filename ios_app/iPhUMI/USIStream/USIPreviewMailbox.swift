@@ -6,6 +6,7 @@ struct USIPreviewDetails: Equatable {
     let depth: String
     let diagnostics: String
     let isCapturing: Bool
+    var positionText: String = "Camera XYZ: — / — / — m"
 
     static let starting = USIPreviewDetails(tracking: "Starting", cameraRate: "Waiting for frames",
         depth: "Waiting for frames", diagnostics: "Starting a new tracking session.", isCapturing: false)
@@ -19,6 +20,7 @@ struct USIPreviewDetails: Equatable {
 struct USIPreviewUpdate {
     let epoch: String
     var jpeg: Data? = nil
+    var depthPNG: Data? = nil
     var details: USIPreviewDetails? = nil
     var clear = false
 }
@@ -40,11 +42,12 @@ final class USIPreviewMailbox {
         return needsSchedule
     }
 
-    func offer(epoch: String, jpeg: Data? = nil, details: USIPreviewDetails? = nil) -> Bool {
+    func offer(epoch: String, jpeg: Data? = nil, depthPNG: Data? = nil, details: USIPreviewDetails? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard epoch == self.epoch else { return false }
         var update = pending ?? USIPreviewUpdate(epoch: epoch)
         if let jpeg { update.jpeg = jpeg }
+        if let depthPNG { update.depthPNG = depthPNG }
         if let details { update.details = details }
         pending = update
         let needsSchedule = !scheduled
