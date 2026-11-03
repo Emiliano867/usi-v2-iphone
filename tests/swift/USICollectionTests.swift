@@ -242,3 +242,18 @@ final class USICollectionTests: XCTestCase {
     }
 
 }
+
+extension USICollectionTests {
+    func testSectorPermutationUsesCalibrationMapping() throws {
+        let channels = try [
+            USIChamberCalibration(sensorIndex: 2, sectorIndex: 1, sealOnKPaAbs: 60, sealOffKPaAbs: 70, persistenceNs: 0),
+            USIChamberCalibration(sensorIndex: 0, sectorIndex: 2, sealOnKPaAbs: 60, sealOffKPaAbs: 70, persistenceNs: 0),
+            USIChamberCalibration(sensorIndex: 1, sectorIndex: 0, sealOnKPaAbs: 60, sealOffKPaAbs: 70, persistenceNs: 0)
+        ]
+        var model = USISealModel(calibration: try USIPressureCalibration(id: "permuted", chambers: channels))
+        try model.update(pressuresKPaAbs: [50, 80, 50], qualityMask: 7, receivedNs: 1)
+        let snapshot = model.snapshot(nowNs: 1)
+        XCTAssertEqual(snapshot.states, [.unsealed, .sealed, .sealed])
+        XCTAssertEqual(snapshot.pressuresKPaAbs, [80, 50, 50])
+    }
+}

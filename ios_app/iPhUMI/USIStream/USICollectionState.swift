@@ -108,7 +108,8 @@ struct USISealModel {
     mutating func snapshot(nowNs: UInt64) -> USISealSnapshot {
         advance(nowNs)
         var states=[USISealChannelState](), numbers=[Double?]()
-        for index in 0..<3 {
+        for sector in 0..<3 {
+            let index=calibration?.chambers.firstIndex(where: { $0.sectorIndex == sector }) ?? sector
             let sensor=calibration?.chambers[index].sensorIndex ?? index, pressure=pressures[sensor]
             let valid=qualityMask & (1 << sensor) != 0 && pressure.isFinite && pressure >= 0
             let fresh=collectionFresh(receivedNs,nowNs,staleNs)
