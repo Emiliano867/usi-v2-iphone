@@ -1,0 +1,13 @@
+usi_collection_msgs/SourceRecord source
+string encoding
+uint32 width
+uint32 height
+uint32 stride
+bool depth_present
+bool confidence_present
+string depth_encoding
+string depth_association
+uint8[] rgb_jpeg
+uint8[] depth_le_f32
+uint8[] depth_valid_mask
+uint8[] confidence_level

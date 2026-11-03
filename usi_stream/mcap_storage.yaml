@@ -1,0 +1,8 @@
+# Indexed, chunked MCAP with per-chunk integrity. Throughput must be measured on hardware.
+noChunking: false
+noChunkCRC: false
+noMessageIndex: false
+noSummary: false
+noSummaryCRC: false
+chunkSize: 4194304
+compression: "None"
