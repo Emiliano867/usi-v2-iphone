@@ -98,6 +98,16 @@ final class LayoutProbe: UIResponder, UIApplicationDelegate {
             let rect = live.preview.convert(live.preview.bounds, to: root)
             if !safe.insetBy(dx: -1, dy: -1).contains(rect) { errors.append("Camera image enlarged the viewport") }
         }
+        if let collection = root as? USICollectionView {
+            let viewport = collection.cameraViewport
+            if !name.contains("large") {
+                if viewport.height < safe.height * 0.42 { errors.append("Camera collapsed into a narrow strip") }
+                if viewport.minY > safe.minY + 112 { errors.append("Header pushes camera too far down") }
+            }
+            if collection.cameraReadoutFrames.contains(where: { $0.intersects(viewport) }) {
+                errors.append("Camera status text overlaps live preview")
+            }
+        }
         if let home = root as? USIHomeView {
             home.scrollView.setContentOffset(.zero, animated: false)
         }

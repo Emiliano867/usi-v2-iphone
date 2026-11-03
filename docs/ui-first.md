@@ -24,3 +24,9 @@ git push origin main
 Run **Suction UMI v2 iOS build** on `main`. Leave the optional simulator layout checks unchecked for the fast build. Download the `suction-umi-v2-UI-first-<run ID>` artifact, extract it, and import **Suction-UMI-v2-UI-first.ipa** into iLoader. Build numbers use series `4`; Data shows the revision. This updates Suction UMI v2 and retains its separate app identifier.
 
 The local Linux checks cover Swift syntax and the existing protocol/mailbox tests. UIKit/RealityKit SDK compilation happens in GitHub Actions; actual layout/camera behavior needs the phone. Sensor/trigger reception, calibrated seal classification and host-controlled verified MCAP trials are the next integration stage.
+
+## Camera layout follow-up
+
+The header now has a compact 48-point height and the trial bar uses 52 points at normal text size. The remaining space expands the camera instead of stretching the header. XYZ, tracking, FPS/depth details and USB status are in the scrollable side panel, outside both RGB and depth previews. The optional native layout probe checks that the camera is tall, starts near the top, and has no readout overlap.
+
+Upload `suction-umi-v2-camera-layout.bundle` and fetch its `usi-v2/ui-first` ref using the same fast-forward commands above. The next artifact is named `suction-umi-v2-camera-layout-<run ID>` and contains **Suction-UMI-v2-camera-layout.ipa**. This update builds on UI revision `3281a30` without including the unfinished infrastructure branch.

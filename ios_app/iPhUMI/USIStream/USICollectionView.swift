@@ -54,8 +54,10 @@ final class USICollectionView: UIView {
     var onStart: (() -> Void)?
     var onStop: (() -> Void)?
     private let canvas = UIView()
-    private var cameraFooter: UIStackView!
     private var headingLabel: UILabel!
+    private var trialBarHeight: NSLayoutConstraint!
+    var cameraViewport: CGRect { canvas.convert(canvas.bounds, to: self) }
+    var cameraReadoutFrames: [CGRect] { [camera, pose, link].map { $0.convert($0.bounds, to: self) } }
     private let depthImage = UIImageView()
     private let depthThumbnail = UIImageView()
     private var nativePreview: UIView?
@@ -123,6 +125,14 @@ final class USICollectionView: UIView {
         title.accessibilityTraits.insert(.header)
         let header = Self.stack([home, title, session, data, settings], axis: .horizontal)
         header.alignment = .center
+        // Center-aligned stacks may absorb all spare height without enlarging
+        // their children. Reserve that height for the camera instead.
+        NSLayoutConstraint.activate([
+            header.heightAnchor.constraint(equalToConstant: 48),
+            home.widthAnchor.constraint(equalToConstant: 88),
+            data.widthAnchor.constraint(equalToConstant: 76),
+            settings.widthAnchor.constraint(equalToConstant: 116)
+        ])
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         session.setContentCompressionResistancePriority(.fittingSizeLevel, for: .horizontal)
         selector.selectedSegmentIndex = 0
@@ -145,17 +155,11 @@ final class USICollectionView: UIView {
         unavailable.textColor = .white
         unavailable.font = .preferredFont(forTextStyle: .body)
         unavailable.adjustsFontForContentSizeCategory = true
-        cameraFooter = Self.stack([camera, pose, link], spacing: 2)
-        cameraFooter.backgroundColor = UIColor.black.withAlphaComponent(0.65)
-        cameraFooter.isLayoutMarginsRelativeArrangement = true
-        cameraFooter.layoutMargins = .init(top: 4, left: 8, bottom: 4, right: 8)
+        let cameraReadouts = Self.stack([camera, pose, link], spacing: 4)
         for label in [camera, pose, link] {
-            label.textColor = .white
+            label.textColor = .secondaryLabel
             label.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(for: .systemFont(ofSize: 12), maximumPointSize: 18)
         }
-        canvas.addSubview(cameraFooter)
-        NSLayoutConstraint.activate([cameraFooter.leadingAnchor.constraint(equalTo: canvas.leadingAnchor),
-            cameraFooter.trailingAnchor.constraint(equalTo: canvas.trailingAnchor), cameraFooter.bottomAnchor.constraint(equalTo: canvas.bottomAnchor)])
         let cameraColumn = Self.stack([selector, canvas], spacing: 4)
         let pressures = Self.stack([Self.label("Pressure · kPa abs", style: .caption1), pressure])
         pressures.accessibilityLabel = "Chamber pressures in kilopascals absolute"
@@ -173,7 +177,7 @@ final class USICollectionView: UIView {
         let depthTile = Self.stack([depthThumbnail, depth], spacing: 0)
         let thumbs = Self.stack([depthTile, wide], axis: .horizontal)
         thumbs.distribution = .fillEqually
-        let status = Self.stack([readings, sealStatus, suction, thumbs])
+        let status = Self.stack([readings, sealStatus, suction, cameraReadouts, thumbs])
         let statusScroll = UIScrollView()
         statusScroll.translatesAutoresizingMaskIntoConstraints = false
         statusScroll.addSubview(status)
@@ -198,6 +202,12 @@ final class USICollectionView: UIView {
         elapsed.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(for: .systemFont(ofSize: 12), maximumPointSize: 18)
         let bar = Self.stack([trialText, startButton, stopButton], axis: .horizontal)
         bar.alignment = .center
+        trialBarHeight = bar.heightAnchor.constraint(equalToConstant: 52)
+        trialBarHeight.isActive = true
+        NSLayoutConstraint.activate([
+            startButton.widthAnchor.constraint(equalToConstant: 140),
+            stopButton.widthAnchor.constraint(equalToConstant: 84)
+        ])
         addSubview(header); addSubview(body); addSubview(bar)
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: safeAreaLayoutGuide.leadingAnchor, constant: 12),
@@ -223,6 +233,7 @@ final class USICollectionView: UIView {
         let large = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
         headingLabel?.isHidden = large
         session.isHidden = large
+        trialBarHeight?.constant = large ? 76 : 52
     }
     private func fill(_ child: UIView, in parent: UIView) {
         child.translatesAutoresizingMaskIntoConstraints = false
@@ -236,7 +247,6 @@ final class USICollectionView: UIView {
         fill(child, in: canvas)
         canvas.bringSubviewToFront(depthImage)
         canvas.bringSubviewToFront(unavailable)
-        canvas.bringSubviewToFront(cameraFooter)
         selectPreview()
     }
     private func showPreview(_ index: Int) { selector.selectedSegmentIndex = index; selectPreview() }
