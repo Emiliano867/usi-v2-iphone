@@ -14,6 +14,15 @@ final class USICollectionRuntimeTests: XCTestCase {
         USICameraImage(intrinsics: k, sourceSize: [4,2], rgbIntrinsics: k, rgbWidth: 4, rgbHeight: 2,
                        jpeg: Data([1,2,3]), depth: nil, confidence: nil, thermalState: "nominal")
     }
+    func testOlderImageCompletionCannotRegressCameraFreshness() throws {
+        let runtime = try USICollectionRuntime(sessionID: "p", worldEpochID: "w")
+        try runtime.connectHost(capabilities: capabilities(), nowNs: 0)
+        let older = try XCTUnwrap(try runtime.admitCamera(pose: pose(1)).encodeTicket)
+        let newer = try XCTUnwrap(try runtime.admitCamera(pose: pose(2)).encodeTicket)
+        try runtime.completeCamera(ticket: newer, image: image())
+        try runtime.completeCamera(ticket: older, image: image())
+        XCTAssertEqual(runtime.lastFresh[.mainRGB], 2)
+    }
     func decoded(_ packet: USICollectionOutbound) throws -> USICollectionPacket {
         try USICollectionWire.decode(packet.bytes)
     }

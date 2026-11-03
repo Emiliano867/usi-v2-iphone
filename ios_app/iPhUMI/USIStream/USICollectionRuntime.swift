@@ -323,7 +323,7 @@ final class USICollectionRuntime {
                     sourceTimestampS:work.sourceTimestamp!,sourceClock:work.sourceClock!,phoneUptimeNs:work.uptime,
                     image:image,acquired:c.sourceCount!,encodeDrops:losses.encodeDrops,transportDrops:losses.transportOverflows)
             }
-            lastFresh[id.stream] = work.uptime; admit(packet)
+            lastFresh[id.stream] = max(lastFresh[id.stream] ?? 0, work.uptime); admit(packet)
         } catch { loss(id.stream,sequence:id.sequence,rejected:true,kind:.encodeFailure); try emitHealth("malformed encoded camera data"); throw error }
     }
     private func admissible(_ id: USISampleIdentity) -> Bool {
