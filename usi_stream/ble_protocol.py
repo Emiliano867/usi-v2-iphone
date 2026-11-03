@@ -120,7 +120,7 @@ class Reassembler:
 
     def reset(self):
         self._id = None
-        self._last_id = None
+        self._latest_started_id = None
         self._buffer = bytearray()
         self._total = 0
         self._started = 0
@@ -143,18 +143,19 @@ class Reassembler:
             if self._id is not None and received_ns < self._last_received:
                 raise BLEError('fragment time reversed')
             if self._id is not None and msg_id != self._id:
+                _check(0 < ((msg_id - self._id) & 0xffffffff) < 0x80000000)
                 self._abort()
             if self._id is None:
-                _check(offset == 0 and (self._last_id is None or
-                       0 < ((msg_id - self._last_id) & 0xffffffff) < 0x80000000))
+                _check(offset == 0 and (self._latest_started_id is None or
+                       0 < ((msg_id - self._latest_started_id) & 0xffffffff) < 0x80000000))
                 self._id, self._total, self._started = msg_id, total, received_ns
+                self._latest_started_id = msg_id
             _check(msg_id == self._id and total == self._total and offset == len(self._buffer))
             self._buffer.extend(part[10:])
             self._last_received = received_ns
             if len(self._buffer) == self._total:
                 result = bytes(self._buffer)
                 decode(result)
-                self._last_id = self._id
                 self._id = None
                 self._buffer.clear()
                 return result

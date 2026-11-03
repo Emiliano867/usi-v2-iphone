@@ -82,4 +82,41 @@ final class USIBLETests: XCTestCase {
         var t = try golden("trigger"); t[17]=2
         XCTAssertThrowsError(try USIBLECodec.decode(t))
     }
+    func testInFlightIDsAdvanceEvenWhenAbandoned() throws {
+        let trigger = try golden("trigger")
+        func first(_ id: UInt32) throws -> Data {
+            try USIBLECodec.fragment(trigger, messageID: id)[0]
+        }
+        let rejected: [(UInt32,UInt32)] = [(10,9),(10,10),(10,0x8000000a)]
+        for (previous,candidate) in rejected {
+            var r = USIBLEReassembler(); XCTAssertNil(try r.feed(first(previous), receivedNs: 0))
+            XCTAssertThrowsError(try r.feed(first(candidate), receivedNs: 1))
+            XCTAssertEqual(r.discarded,1)
+            XCTAssertThrowsError(try r.feed(first(previous), receivedNs: 2))
+        }
+        var r = USIBLEReassembler()
+        for part in try USIBLECodec.fragment(trigger, messageID: 8) {
+            _ = try r.feed(part, receivedNs: 0)
+        }
+        XCTAssertNil(try r.feed(first(10), receivedNs: 1))
+        XCTAssertThrowsError(try r.feed(first(9), receivedNs: 2))
+        r = USIBLEReassembler()
+        XCTAssertNil(try r.feed(first(10), receivedNs: 0))
+        XCTAssertNil(try r.feed(first(11), receivedNs: 1)); XCTAssertEqual(r.discarded,1)
+        XCTAssertThrowsError(try r.feed(first(10), receivedNs: 2))
+        r = USIBLEReassembler()
+        XCTAssertNil(try r.feed(first(0xffffffff), receivedNs: 0))
+        XCTAssertNil(try r.feed(first(0), receivedNs: 1)); XCTAssertEqual(r.discarded,1)
+        var result: Data?
+        for part in try USIBLECodec.fragment(trigger, messageID: 0).dropFirst() {
+            result = try r.feed(part, receivedNs: 2)
+        }
+        XCTAssertEqual(result,trigger)
+        r = USIBLEReassembler()
+        XCTAssertNil(try r.feed(first(10), receivedNs: 0))
+        let latePart = try USIBLECodec.fragment(trigger, messageID: 10)[1]
+        XCTAssertThrowsError(try r.feed(latePart, receivedNs: 500_000_001))
+        XCTAssertThrowsError(try r.feed(first(9), receivedNs: 500_000_002))
+        XCTAssertNil(try r.feed(first(11), receivedNs: 500_000_003))
+    }
 }

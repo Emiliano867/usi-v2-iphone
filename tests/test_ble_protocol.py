@@ -58,6 +58,10 @@ def test_fragment_timeout_new_message_disconnect_and_id_wrap():
     r=ble.Reassembler(); p=parts(); r.feed(p[0],0)
     with pytest.raises(ble.BLEError): r.feed(p[1],500000001)
     assert r.discarded == 1
+    for msg_id in (10,11):
+        for part in ble.fragment(golden('trigger'),msg_id,20): result=r.feed(part,500000002)
+        assert result == golden('trigger')
+    r.reset()
     for msg_id in (0xffffffff,0):
         for part in ble.fragment(golden('trigger'),msg_id,20): result=r.feed(part,500000002)
         assert result == golden('trigger')
@@ -94,3 +98,28 @@ def test_reassembler_rejects_time_reversal():
     r=ble.Reassembler(); p=parts(); r.feed(p[0],100)
     with pytest.raises(ble.BLEError): r.feed(p[1],99)
     assert r.discarded == 1
+
+
+def test_inflight_ids_advance_even_when_abandoned():
+    trigger=golden('trigger')
+    def first(ident): return ble.fragment(trigger,ident,20)[0]
+    for previous, candidate in ((10,9),(10,10),(10,10+0x80000000)):
+        r=ble.Reassembler(); r.feed(first(previous),0)
+        with pytest.raises(ble.BLEError): r.feed(first(candidate),1)
+        assert r.discarded==1
+        with pytest.raises(ble.BLEError): r.feed(first(previous),2)
+    r=ble.Reassembler()
+    for part in ble.fragment(trigger,8,20): r.feed(part,0)
+    r.feed(first(10),1)
+    with pytest.raises(ble.BLEError): r.feed(first(9),2)
+    r=ble.Reassembler(); r.feed(first(10),0)
+    assert r.feed(first(11),1) is None and r.discarded==1
+    with pytest.raises(ble.BLEError): r.feed(first(10),2)
+    r=ble.Reassembler(); r.feed(first(0xffffffff),0)
+    assert r.feed(first(0),1) is None and r.discarded==1
+    for part in ble.fragment(trigger,0,20)[1:]: result=r.feed(part,2)
+    assert result==trigger
+    r=ble.Reassembler(); r.feed(first(10),0)
+    with pytest.raises(ble.BLEError): r.feed(ble.fragment(trigger,10,20)[1],500000001)
+    with pytest.raises(ble.BLEError): r.feed(first(9),500000002)
+    assert r.feed(first(11),500000003) is None

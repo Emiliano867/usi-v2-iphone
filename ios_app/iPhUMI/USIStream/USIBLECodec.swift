@@ -126,13 +126,13 @@ enum USIBLECodec {
 }
 struct USIBLEReassembler {
     private var currentID: UInt32?
-    private var lastID: UInt32?
+    private var latestStartedID: UInt32?
     private var buffer = Data()
     private var total = 0
     private var startedNs: UInt64 = 0
     private var lastReceivedNs: UInt64 = 0
     private(set) var discarded = 0
-    mutating func reset() { currentID=nil; lastID=nil; buffer.removeAll(); total=0 }
+    mutating func reset() { currentID=nil; latestStartedID=nil; buffer.removeAll(); total=0 }
     private mutating func abort() {
         if currentID != nil { discarded += 1 }
         currentID = nil; buffer.removeAll(); total=0
@@ -146,14 +146,18 @@ struct USIBLEReassembler {
             guard (1...256).contains(length), offset < length, offset+part.count-10 <= length else { throw USIBLEError.invalid }
             if currentID != nil && receivedNs >= startedNs && receivedNs-startedNs > 500_000_000 { throw USIBLEError.invalid }
             if currentID != nil && receivedNs < lastReceivedNs { throw USIBLEError.invalid }
-            if currentID != nil && id != currentID { abort() }
+            if let currentID, id != currentID {
+                let distance = id &- currentID
+                guard distance > 0, distance < 0x80000000 else { throw USIBLEError.invalid }
+                abort()
+            }
             if currentID == nil {
-                if let lastID {
-                    let distance = id &- lastID
+                if let latestStartedID {
+                    let distance = id &- latestStartedID
                     guard distance > 0, distance < 0x80000000 else { throw USIBLEError.invalid }
                 }
                 guard offset == 0 else { throw USIBLEError.invalid }
-                currentID=id; total=length; startedNs=receivedNs
+                currentID=id; latestStartedID=id; total=length; startedNs=receivedNs
             }
             guard id == currentID, length == total, offset == buffer.count else { throw USIBLEError.invalid }
             buffer.append(part.dropFirst(10))
@@ -161,7 +165,7 @@ struct USIBLEReassembler {
             if buffer.count == total {
                 let result=buffer
                 _ = try USIBLECodec.decode(result)
-                lastID=id; currentID=nil; buffer.removeAll(); return result
+                currentID=nil; buffer.removeAll(); return result
             }
             return nil
         } catch {
