@@ -23,6 +23,7 @@ xcrun --sdk iphonesimulator swiftc -swift-version 5 -parse-as-library \
     -sdk "$sim_sdk" -target "$(uname -m)-apple-ios18.0-simulator" \
     "$repo_root/ios_app/iPhUMI/USIStream/USIPreviewMailbox.swift" \
     "$repo_root/ios_app/iPhUMI/USIStream/USIInterface.swift" \
+    "$repo_root/ios_app/iPhUMI/USIStream/USICollectionView.swift" \
     "$repo_root/tests/ios-layout/ProbeApp.swift" -o "$probe_app/USILayoutProbe"
 cat > "$probe_app/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

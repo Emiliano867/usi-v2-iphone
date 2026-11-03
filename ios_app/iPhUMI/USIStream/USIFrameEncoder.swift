@@ -15,6 +15,7 @@ struct USIEncodedFrame {
     var metadata: [String: Any]
     let payload: Data
     let previewJPEG: Data
+    let depthPreviewPNG: Data?
 }
 
 enum USIFrameEncodingError: Error { case invalidBuffer, jpegFailed, frameTooLarge }
@@ -61,7 +62,32 @@ final class USIFrameEncoder {
             }
         }
         guard payload.count <= USIWire.maxPayloadLength else { throw USIFrameEncodingError.frameTooLarge }
-        return USIEncodedFrame(metadata: metadata, payload: payload, previewJPEG: jpeg)
+        return USIEncodedFrame(metadata: metadata, payload: payload, previewJPEG: jpeg,
+                               depthPreviewPNG: snapshot.depth.flatMap { depthPreview($0) })
+    }
+
+    /// Visualization only: 0–2 m, near light, invalid black. Recorded bytes stay raw.
+    private func depthPreview(_ buffer: CVPixelBuffer) -> Data? {
+        guard CVPixelBufferGetPixelFormatType(buffer) == kCVPixelFormatType_DepthFloat32,
+              CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+        let stride = CVPixelBufferGetBytesPerRow(buffer)
+        guard width > 0, height > 0, width <= 8192, height <= 8192, stride >= width * 4 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        for y in 0..<height {
+            let row = base.advanced(by: y * stride).assumingMemoryBound(to: Float32.self)
+            for x in 0..<width {
+                let value = row[x]
+                if value.isFinite && value > 0 { pixels[y * width + x] = UInt8(255 * (1 - min(value / 2, 1))) }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 8,
+                  bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: 0),
+                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+        return UIImage(cgImage: image).pngData()
     }
 
     private func packRows(_ buffer: CVPixelBuffer, elementSize: Int) throws -> Data {

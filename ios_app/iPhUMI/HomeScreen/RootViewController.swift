@@ -9,7 +9,6 @@
 import UIKit
 
 class RootViewController: UIViewController {
-    private var restoredInitialMode = false
         
     @IBOutlet weak var versionLabel: UILabel!
     override func viewDidLoad() {
@@ -17,29 +16,14 @@ class RootViewController: UIViewController {
         configureHome()
     }
     
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        // Restore on launch once; returning Home must reveal all three modes.
-        guard !restoredInitialMode else { return }
-        restoredInitialMode = true
-        let defaults = UserDefaults.standard
-        let appMode = defaults.object(forKey: "appMode") as? String
-        
-        if appMode == "demonstration" {
-            collectDemonstration()
-        } else if appMode == "deployment" {
-            startDeployment()
-        } else if appMode == "usi_stream" {
-            startUSIStream()
-        }
-    }
 
     private func configureHome() {
         // Removing controls removes their constraints; preserve UIKit's safe area.
         view.subviews.forEach { $0.removeFromSuperview() }
         let home = USIHomeView(title: Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Suction UMI v2")
         home.onStream = { [weak self] in self?.startUSIStream() }
-        home.onCollect = { [weak self] in self?.collectDemonstration() }
+        home.onCollect = { [weak self] in self?.startUSIStream() }
+        home.onLegacyCollect = { [weak self] in self?.collectLegacyDemonstration() }
         home.onDeploy = { [weak self] in self?.startDeployment() }
         home.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(home)
@@ -59,6 +43,10 @@ class RootViewController: UIViewController {
     }
     
     func collectDemonstration() {
+        startUSIStream()
+    }
+
+    private func collectLegacyDemonstration() {
         let defaults = UserDefaults.standard
         defaults.set("demonstration", forKey: "appMode")
         

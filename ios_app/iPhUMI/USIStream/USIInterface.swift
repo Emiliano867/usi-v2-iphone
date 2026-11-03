@@ -70,6 +70,7 @@ final class USIHomeView: UIView {
     let scrollView = UIScrollView()
     var onStream: (() -> Void)?
     var onCollect: (() -> Void)?
+    var onLegacyCollect: (() -> Void)?
     var onDeploy: (() -> Void)?
 
     init(title: String) {
@@ -78,13 +79,17 @@ final class USIHomeView: UIView {
         let heading = USIInterface.label(title, style: .title1, id: "home.title")
         heading.textAlignment = .center
         heading.accessibilityTraits.insert(.header)
-        let stream = USIInterface.button("Live USB Stream", subtitle: "RGB, depth and camera pose to Ubuntu",
-            primary: true, id: "home.stream") { [weak self] in self?.onStream?() }
-        let collect = USIInterface.button("Collect Demonstrations", subtitle: "Save camera demonstrations on iPhone",
-            id: "home.collect") { [weak self] in self?.onCollect?() }
-        let deploy = USIInterface.button("Deployment Mode", subtitle: "Original camera streaming options",
-            id: "home.deploy") { [weak self] in self?.onDeploy?() }
-        let menu = USIInterface.stack([heading, stream, collect, deploy])
+        let collect = USIInterface.button("Collect Demonstrations", subtitle: "Live camera, seal display and trial controls",
+            primary: true, id: "home.collect") { [weak self] in self?.onCollect?() }
+        let advanced = USIInterface.button("Advanced", subtitle: "Original iPhUMI tools and camera diagnostics",
+            id: "home.advanced") {}
+        advanced.menu = UIMenu(children: [
+            UIAction(title: "Original iPhUMI collection") { [weak self] _ in self?.onLegacyCollect?() },
+            UIAction(title: "Original deployment mode") { [weak self] _ in self?.onDeploy?() },
+            UIAction(title: "Live USB camera") { [weak self] _ in self?.onStream?() }
+        ])
+        advanced.showsMenuAsPrimaryAction = true
+        let menu = USIInterface.stack([heading, collect, advanced])
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         addSubview(scrollView)
         let content = USIInterface.scrollContent(scrollView)
@@ -233,7 +238,7 @@ final class USIDiagnosticsViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
         view.accessibilityViewIsModal = true
-        let title = USIInterface.label("Diagnostics", style: .title2)
+        let title = USIInterface.label("Collection Data", style: .title2)
         title.accessibilityTraits.insert(.header)
         text.text = details
         text.isEditable = false

@@ -5,7 +5,7 @@ import UIKit
 final class LayoutProbe: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
     private var results: [[String: Any]] = []
-    private var cases = ["home", "live", "home-large-text", "live-large-text", "diagnostics", "diagnostics-large-text"]
+    private var cases = ["home", "collection", "collection-large-text", "collection-partial", "diagnostics"]
 
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -30,6 +30,16 @@ final class LayoutProbe: UIResponder, UIApplicationDelegate {
         controller.traitOverrides.preferredContentSizeCategory = name.contains("large") ? .accessibilityExtraExtraExtraLarge : .large
         if name.hasPrefix("home") {
             controller.view = USIHomeView(title: "Suction UMI v2")
+        } else if name.hasPrefix("collection") {
+            let collection = USICollectionView(frame: .zero)
+            collection.apply(USIPreviewDetails(tracking: "Normal", cameraRate: "60.0 FPS · test fixture",
+                depth: "256 × 192", diagnostics: "TEST DATA ONLY", isCapturing: true))
+            collection.setUSBStatus("USB · test fixture")
+            if name.contains("partial") {
+                collection.applySensors(pressures: [85.4, 84.8, 100.9], states: [.sealed, .sealed, .unsealed], suctionText: "Suction ON · TEST DATA")
+                collection.applyTrial(number: 7, state: "Recording · TEST DATA", elapsedText: "00:12 · TEST DATA", recording: true)
+            }
+            controller.view = collection
         } else if !name.hasPrefix("diagnostics") {
             let live = USILiveView(frame: .zero)
             live.setUSBStatus("USB disconnected — waiting for Ubuntu to reconnect")
@@ -53,9 +63,10 @@ final class LayoutProbe: UIResponder, UIApplicationDelegate {
         if root.bounds.width <= root.bounds.height { errors.append("Expected landscape") }
         let buttons = descendants(root).compactMap { $0 as? UIButton }
             .filter { $0.accessibilityIdentifier != nil }
-        if buttons.count != (name.hasPrefix("home") ? 3 : 2) { errors.append("Missing navigation controls") }
+        let expectedButtons = name.hasPrefix("collection") ? 7 : 2
+        if buttons.count != expectedButtons { errors.append("Missing navigation controls") }
         for button in buttons {
-            if name.hasPrefix("home"), let scroll = ancestors(button).compactMap({ $0 as? UIScrollView }).first {
+            if let scroll = ancestors(button).compactMap({ $0 as? UIScrollView }).first {
                 scroll.scrollRectToVisible(button.convert(button.bounds, to: scroll), animated: false)
                 root.layoutIfNeeded()
             }
