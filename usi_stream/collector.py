@@ -1,5 +1,6 @@
 """Authoritative v2 collection endpoint. The phone never self-confirms a saved bag."""
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -43,6 +44,7 @@ class Collector:
         self.trial_id=None; self.snapshot=None; self.reason=None; self.verification='pending'
         self.bag_path=None; self.store=None; self.writer=None; self.begin_fences={}; self.end_fences={}
         self.fresh={}; self.received={}; self._ledger={}; self._final_thread=None
+        self._outcomes={}
         self.received_counts={}; self.record_identities={}; self.duplicate_counts={}; self.rejected_counts={}
         self._lock=threading.RLock(); self._condition=threading.Condition(self._lock)
         self._source_counters=[]; self._failures=[]; self._last_trial_id=None
@@ -51,10 +53,12 @@ class Collector:
         self._source_times={}; self._begin_ns=None; self._end_ns=None
         self._latest_source_counters={}; self._begin_source_counters={}
         self._legacy_bridge_counts={'pressures':0,'trigger':0}
+        self._camera_calibrations={}; self._prepared_camera_calibration=None
 
     def _abort_active(self,reason):
         if self.state!='recording': return
         self._failures.append(reason)
+        self._accepting=False
         self.end_fences={lane:(src,epoch,start) for lane,(src,epoch,start) in self.begin_fences.items()}
         self.state='finalizing'; self.revision+=1
         self._final_thread=threading.Thread(target=self._finalize,daemon=True)
@@ -129,6 +133,7 @@ class Collector:
             limit=(config['pressure_stale_ns'] if lane=='pressures' else
                    config['trigger_stale_ns'] if lane=='trigger' else config['vision_stale_ns'])
             if stamp is None or stamp>now or now-stamp>limit: missing.append(lane)
+        if self._prepared_camera_calibration is None: missing.append('camera_calibration')
         return sorted(set(missing))
 
     def command(self,meta):
@@ -139,10 +144,13 @@ class Collector:
             previous=self._ledger.get(meta['request_id'])
             if previous is not None:
                 if previous!=signature: raise ValueError('request_id reused with different contents')
-                return self._status(meta['request_id'])
+                return self._status_for_trial(meta['trial_id'],meta['request_id'])
             action=meta['action']
             if action=='status':
-                return self._status(meta['request_id'])
+                if len(self._ledger)>=4096: raise ValueError('request ledger full')
+                result=self._status_for_trial(meta['trial_id'],meta['request_id'])
+                self._ledger[meta['request_id']]=signature
+                return result
             if len(self._ledger)>=4096: raise ValueError('request ledger full')
             if action=='stop' and self.state in ('finalizing','incomplete') and meta['trial_id']==self.trial_id:
                 self._ledger[meta['request_id']]=signature
@@ -154,9 +162,22 @@ class Collector:
             self._ledger[meta['request_id']]=signature
             return result
 
+    def _status_for_trial(self,trial_id,request_id):
+        if trial_id==self.trial_id: return self._status(request_id)
+        outcome=self._outcomes.get(trial_id)
+        if outcome is None: raise ValueError('unknown or retired trial_id')
+        result=copy.deepcopy(outcome); result['request_id']=request_id
+        result['host_time_ns']=self.now_ns()
+        validate_metadata(MessageType.TRIAL_STATUS,result)
+        return result
+
+    def _remember_outcome(self):
+        if self.trial_id is not None: self._outcomes[self.trial_id]=copy.deepcopy(self._status())
+
     def _prepare(self,meta):
         if self.state not in ('idle','saved','incomplete'): raise ValueError('trial already active')
-        if meta['trial_id']==self._last_trial_id: raise ValueError('trial_id already used')
+        if meta['trial_id'] in self._outcomes or meta['trial_id']==self.trial_id: raise ValueError('trial_id already used')
+        if len(self._outcomes)>=256: raise ValueError('trial outcome ledger full')
         self.trial_id=meta['trial_id']; self.snapshot=meta['snapshot']; self.state='preparing'
         self.reason=None; self.verification='pending'; self.begin_fences={}; self.end_fences={}
         self.received={}; self.received_counts={}; self.record_identities={}
@@ -164,6 +185,9 @@ class Collector:
         self._source_counters=[]; self._failures=[]; self.writer=None; self.store=None; self.bag_path=None
         self._source_times={}; self._begin_ns=None; self._end_ns=None
         self.seal_model=None
+        main=next((c for c in self.snapshot['capabilities'] if c['stream_id']=='main_rgb'),None)
+        self._prepared_camera_calibration=copy.deepcopy(
+            self._camera_calibrations.get((main['source_id'],main['epoch_id'])) if main else None)
         if self.snapshot['calibration']:
             from .collection_state import ChamberCalibration, PressureCalibration, SealModel
             calibration=self.snapshot['calibration']
@@ -175,17 +199,20 @@ class Collector:
         if unavailable:
             self.reason='required streams unavailable: '+','.join(unavailable)
             self.state='incomplete'; self.verification='failed'; self.revision+=1
+            self._remember_outcome()
             return self._status(meta['request_id'])
         self.root.mkdir(parents=True,exist_ok=True)
         if shutil.disk_usage(self.root).free<self.min_free_bytes:
             self.reason='insufficient disk space'; self.state='incomplete'
             self.verification='failed'; self.revision+=1
+            self._remember_outcome()
             return self._status(meta['request_id'])
         name='trial-'+hashlib.sha256(self.trial_id.encode()).hexdigest()[:16]
         self.bag_path=self.root/name
         if self.bag_path.exists():
             self.reason='bag path already exists'; self.state='incomplete'
             self.verification='failed'; self.revision+=1
+            self._remember_outcome()
             return self._status(meta['request_id'])
         try:
             self.store=self.storage_factory()
@@ -194,6 +221,7 @@ class Collector:
         except Exception as exc:
             self.state='incomplete'; self.verification='failed'; self.reason='writer open: '+str(exc)
             self.revision+=1
+            self._remember_outcome()
         return self._status(meta['request_id'])
 
     def _fence_map(self,fences):
@@ -221,8 +249,8 @@ class Collector:
         self.begin_fences=fences; self.state='recording'; self.reason=None; self.revision+=1
         self._accepting=True
         self._begin_ns=self.now_ns(); self._end_ns=None
-        self._begin_frame_counters=dict(self._latest_frame_counters)
-        self._begin_source_counters=dict(self._latest_source_counters)
+        self._begin_frame_counters=copy.deepcopy(self._latest_frame_counters)
+        self._begin_source_counters=copy.deepcopy(self._latest_source_counters)
         self._write_static()
         try: self.writer.flush()
         except Exception as exc: self._abort_active('writer metadata: '+str(exc))
@@ -231,16 +259,18 @@ class Collector:
 
     def _write_static(self):
         stamp=self.wall_ns(); snap=self.snapshot
-        record=self.static_record_factory(snap,self.trial_id,stamp)
-        if not self.writer.submit(record):
-            self._failures.append('writer queue overflow at trial metadata')
-        else:
-            self.received_counts['trial_metadata']=1
-            self.record_identities['trial_metadata']=(record.source_id,record.epoch_id)
+        records=self.static_record_factory(snap,self.trial_id,stamp,
+            self._prepared_camera_calibration,self.begin_fences['main_rgb'][2])
+        for record in records:
+            if not self.writer.submit(record):
+                self._failures.append('writer queue overflow at '+record.stream_id)
+            else:
+                self.received_counts[record.stream_id]=1
+                self.record_identities[record.stream_id]=(record.source_id,record.epoch_id)
 
     @staticmethod
-    def _ros_static_record(snap,trial_id,stamp):
-        from usi_collection_msgs.msg import TrialRecord
+    def _ros_static_record(snap,trial_id,stamp,calibration,begin_sequence):
+        from usi_collection_msgs.msg import TrialRecord, SourceRecord
         from rclpy.serialization import serialize_message
         from .recorder import Record
         msg=TrialRecord(); msg.header.stamp.sec=stamp//10**9; msg.header.stamp.nanosec=stamp%10**9
@@ -248,8 +278,18 @@ class Collector:
         msg.gripper_id=snap['gripper_id']; msg.profile=snap['profile']
         msg.calibration_id=snap['calibration']['calibration_id'] if snap['calibration'] else ''
         msg.snapshot_json=json.dumps(snap,sort_keys=True)
-        return Record('/usi_collection/trial_metadata','usi_collection_msgs/msg/TrialRecord',
+        trial=Record('/usi_collection/trial_metadata','usi_collection_msgs/msg/TrialRecord',
             serialize_message(msg),stamp,'trial_metadata',snap['session_id'],snap['session_id'],0)
+        cap=next(c for c in snap['capabilities'] if c['stream_id']=='camera_calibration')
+        cal=SourceRecord(); cal.header.stamp.sec=stamp//10**9; cal.header.stamp.nanosec=stamp%10**9
+        cal.header.frame_id='arkit_camera'; cal.stream_id='camera_calibration'
+        cal.source_id=cap['source_id']; cal.epoch_id=cap['epoch_id']; cal.sequence=begin_sequence
+        cal.phone_session_id=snap['session_id']; cal.host_receive_wall_ns=stamp
+        cal.metadata_json=json.dumps(calibration,sort_keys=True,separators=(',',':'))
+        camera=Record('/usi_collection/camera_calibration','usi_collection_msgs/msg/SourceRecord',
+            serialize_message(cal),stamp,'camera_calibration',cal.source_id,cal.epoch_id,begin_sequence,
+            cal.metadata_json)
+        return [trial,camera]
 
     def _stop(self,meta):
         if self.state!='recording' or meta['trial_id']!=self.trial_id: raise ValueError('trial not recording')
@@ -285,6 +325,12 @@ class Collector:
         elif kind==MessageType.TRIGGER: identities=[('trigger',meta['source_id'],meta['boot_id'],meta['sequence'])]
         with self._lock:
             for lane,source,epoch,sequence in identities: self.fresh[(lane,source,epoch)]=received_ns
+            if kind==MessageType.FRAME and meta['stream_id']=='main_rgb' and self.state in ('idle','saved','incomplete'):
+                from .ros_messages import camera_calibration_snapshot
+                key=(meta['session_id'],meta['world_epoch_id'])
+                if key not in self._camera_calibrations and len(self._camera_calibrations)>=32:
+                    self._camera_calibrations.pop(next(iter(self._camera_calibrations)))
+                self._camera_calibrations[key]=camera_calibration_snapshot(meta)
             if kind==MessageType.HEALTH:
                 for counter in meta['counters']:
                     key=(counter['stream_id'],counter['source_id'],counter['epoch_id'])
@@ -298,8 +344,7 @@ class Collector:
                             (old and (cap['source_id'],cap['epoch_id'])!=(old['source_id'],old['epoch_id']))):
                         self._failures.append('required capability changed: '+cap['stream_id'])
                 for counter in meta['counters']:
-                    if counter['stream_id'] in required and (counter['queue_overflow_count'] or
-                            counter['rejected_count'] or counter['missing_ranges']):
+                    if counter['stream_id'] in required and self._counter_loss(counter):
                         self._failures.append('reported source loss: '+counter['stream_id'])
             if kind==MessageType.FRAME:
                 previous=self._latest_frame_counters.get(meta['stream_id'])
@@ -311,43 +356,86 @@ class Collector:
                 self._latest_frame_counters[meta['stream_id']]=current
             if self.state not in ('recording','finalizing'): return
             if not self._accepting:
-                self._failures.append('packet after drain closed'); return
+                return
             if kind in (MessageType.HELLO,MessageType.PING,MessageType.PONG): return
-            if kind==MessageType.FRAME:
-                self._source_times.setdefault(meta['stream_id'],{})[meta['frame_seq']]=(
-                    meta['arkit_timestamp_s'] if meta['stream_id']=='main_rgb' else meta['source_timestamp_s'])
-            elif kind==MessageType.POSES:
-                for sample in meta['samples']:
-                    self._source_times.setdefault('camera_pose',{})[sample['frame_seq']]=sample['arkit_timestamp_s']
+            accepted=[]
+            for lane,source,epoch,sequence in identities:
+                fence=self.begin_fences.get(lane)
+                if fence is None or (source,epoch)!=fence[:2]:
+                    self._failures.append('source epoch changed: '+lane)
+                    self.rejected_counts[lane]=self.rejected_counts.get(lane,0)+1
+                    continue
+                if sequence<fence[2]: continue
+                end=self.end_fences.get(lane)
+                if end and sequence>=end[2]: continue
+                key=(lane,source,epoch,sequence)
+                if key in self.received:
+                    self._failures.append('duplicate identity: '+lane)
+                    self.duplicate_counts[lane]=self.duplicate_counts.get(lane,0)+1
+                    continue
+                accepted.append(key)
+            if identities and not accepted:
+                self._expire_if_needed(); return
+            if kind==MessageType.FRAME and meta['stream_id']=='main_rgb':
+                from .ros_messages import camera_calibration_snapshot,compatible_camera_format
+                current=camera_calibration_snapshot(meta)
+                if not compatible_camera_format(current,self._prepared_camera_calibration):
+                    self._failures.append('camera calibration changed')
+                    self._expire_if_needed(); return
+            if kind in (MessageType.POSES,MessageType.PRESSURE) and len(accepted)!=len(identities):
+                selected={key[3] for key in accepted}
+                meta=dict(meta,samples=[sample for sample in meta['samples']
+                    if sample['frame_seq' if kind==MessageType.POSES else 'sequence'] in selected])
+                packet=Packet(kind,meta,packet.payload)
             try: records=self.record_factory(packet,received_ns,wall_ns)
             except Exception as exc:
                 self._failures.append('record conversion failed: '+str(exc))
                 self._expire_if_needed()
                 raise
+            accepted_set=set(accepted)
             for record in records:
-                if record.stream_id in FENCED_STREAMS or record.stream_id in ('raw_depth','depth_confidence'):
-                    lane='main_rgb' if record.stream_id in ('raw_depth','depth_confidence') else record.stream_id
-                    fence=self.begin_fences.get(lane)
-                    if fence is None or (record.source_id,record.epoch_id)!=(fence[0],fence[1]):
-                        self._failures.append('source epoch changed: '+lane)
-                        self.rejected_counts[record.stream_id]=self.rejected_counts.get(record.stream_id,0)+1
-                        continue
-                    if record.sequence<fence[2]: continue
-                    end=self.end_fences.get(lane)
-                    if end and record.sequence>=end[2]: continue
-                    key=(record.stream_id,record.source_id,record.epoch_id,record.sequence)
-                    if key in self.received:
-                        self._failures.append('duplicate identity: '+record.stream_id)
-                        self.duplicate_counts[record.stream_id]=self.duplicate_counts.get(record.stream_id,0)+1
-                        continue
-                    self.received[key]=received_ns
+                lane=self._record_parent(record)
+                if lane and (lane,record.source_id,record.epoch_id,record.sequence) not in accepted_set:
+                    self._failures.append('record parent identity mismatch: '+record.topic)
+                    continue
                 if record.stream_id:
                     self.received_counts[record.stream_id]=self.received_counts.get(record.stream_id,0)+1
                     self.record_identities[record.stream_id]=(record.source_id,record.epoch_id)
                 if not self.writer or not self.writer.submit(record):
                     self._failures.append('writer queue overflow or failure')
+            for key in accepted:
+                self.received[key]=received_ns
+                lane,_,_,seq=key
+                if lane=='main_rgb': self._source_times.setdefault(lane,{})[seq]=meta['arkit_timestamp_s']
+                elif lane=='ultrawide': self._source_times.setdefault(lane,{})[seq]=meta['source_timestamp_s']
+                elif lane=='camera_pose':
+                    sample=next(s for s in meta['samples'] if s['frame_seq']==seq)
+                    self._source_times.setdefault(lane,{})[seq]=sample['arkit_timestamp_s']
             self._condition.notify_all()
             self._expire_if_needed()
+
+    @staticmethod
+    def _record_parent(record):
+        return {'raw_depth':'main_rgb','depth_confidence':'main_rgb',
+                'tracking':'camera_pose','seal':'pressures',
+                '/pressure':'pressures','/pressure_timing':'pressures',
+                '/trigger':'trigger','/trigger_timing':'trigger'}.get(record.stream_id or record.topic,
+                    record.stream_id if record.stream_id in FENCED_STREAMS else None)
+
+    def _counter_loss(self,counter):
+        key=(counter['stream_id'],counter['source_id'],counter['epoch_id'])
+        baseline=self._begin_source_counters.get(key)
+        for field in ('queue_overflow_count','rejected_count'):
+            current=counter[field]; previous=baseline[field] if baseline else None
+            if current is not None and (current>previous if previous is not None else current>0): return True
+        lane=counter['stream_id']
+        if lane in self.begin_fences:
+            start=self.begin_fences[lane][2]
+            end=(self.end_fences[lane][2] if lane in self.end_fences else
+                 max((key[3]+1 for key in self.received if key[0]==lane),default=start))
+            if any(g['end_exclusive']>start and g['start']<end
+                   for g in counter['missing_ranges']): return True
+        return False
 
     def _ranges_present(self,records):
         identities={(r.stream_id,r.source_id,r.epoch_id,r.sequence) for r in records}
@@ -359,10 +447,39 @@ class Collector:
                 if (lane,source,epoch,seq) not in identities: missing.append(lane+':'+str(seq))
         return missing
 
+    def _boundary_and_join_errors(self,records):
+        errors=[]
+        identities={(r.stream_id,r.source_id,r.epoch_id,r.sequence) for r in records}
+        derived={'raw_depth':'main_rgb','depth_confidence':'main_rgb',
+                 'tracking':'camera_pose','seal':'pressures'}
+        for record in records:
+            parent=self._record_parent(record)
+            if parent is None: continue
+            fence=self.begin_fences[parent]; end=self.end_fences[parent][2]
+            if ((record.source_id,record.epoch_id)!=fence[:2] or
+                    not fence[2]<=record.sequence<end):
+                errors.append('reopened identity outside fence: '+record.topic)
+            if record.stream_id in derived and (parent,record.source_id,record.epoch_id,record.sequence) not in identities:
+                errors.append('derived join mismatch: '+record.stream_id)
+        for lane in ('camera_pose','pressures'):
+            child='tracking' if lane=='camera_pose' else 'seal'
+            for stream,source,epoch,sequence in identities:
+                if stream==lane and (child,source,epoch,sequence) not in identities:
+                    errors.append('derived join missing: '+child)
+        calibration=[r for r in records if r.stream_id=='camera_calibration']
+        cap=next(c for c in self.snapshot['capabilities'] if c['stream_id']=='camera_calibration')
+        expected=(cap['source_id'],cap['epoch_id'],self.begin_fences['main_rgb'][2])
+        if len(calibration)!=1 or (calibration[0].source_id,calibration[0].epoch_id,calibration[0].sequence)!=expected:
+            errors.append('frozen camera calibration mismatch')
+        elif calibration[0].details!=json.dumps(self._prepared_camera_calibration,sort_keys=True,separators=(',',':')):
+            errors.append('frozen camera calibration content mismatch')
+        return errors
+
     def _finalize(self):
         deadline=time.monotonic()+self.drain_timeout_s
         with self._lock:
             while time.monotonic()<deadline:
+                if not self._accepting: break
                 if not self._ranges_present([_identity_record(k) for k in self.received]):
                     break
                 self._condition.wait(timeout=min(0.05,max(0,deadline-time.monotonic())))
@@ -376,13 +493,14 @@ class Collector:
             except Exception as exc: records=[]; errors.append('reopen: '+str(exc))
         else: records=[]
         errors+=self._ranges_present(records)
+        errors+=self._boundary_and_join_errors(records)
         if self.bag_path is None or not self.bag_path.is_dir() or not list(self.bag_path.glob('*.mcap')):
             errors.append('MCAP artifact absent')
         seen=set()
         for record in records:
             if not record.stream_id: continue
             identity=(record.stream_id,record.source_id,record.epoch_id,record.sequence)
-            if identity in seen and record.stream_id in FENCED_STREAMS:
+            if identity in seen and (record.stream_id in FENCED_STREAMS or record.stream_id in ('raw_depth','depth_confidence','tracking','seal','camera_calibration')):
                 errors.append('duplicate reopened identity: '+record.stream_id)
             seen.add(identity)
         required=set(self.snapshot['required_streams'])
@@ -433,25 +551,31 @@ class Collector:
                 if source_rate is None or source_rate<target or interval_rate is None or interval_rate<target:
                     errors.append('source cadence shortfall: '+lane)
                     rate_check='failed'
-        manifest=dict(trial_id=self.trial_id,profile=self.snapshot['profile'],generated_test_data=self.generated_test_data,
+        with self._lock:
+            for failure in self._failures:
+                if failure not in errors: errors.append(failure)
+            manifest=dict(trial_id=self.trial_id,profile=self.snapshot['profile'],generated_test_data=self.generated_test_data,
             reopened_counts=counts,writer_accepted_counts=dict(self.writer.accepted_by_stream),
             received_counts=dict(self.received_counts),observed_host_receive_hz=host_rates,
             observed_source_hz=source_rates,observed_interval_hz=interval_rates,rate_check=rate_check,
             legacy_topic_counts=legacy_topic_counts,
+            begin_fences=self.begin_fences,end_fences=self.end_fences,
+            begin_source_counters=list(self._begin_source_counters.values()),
+            observed_source_counters=list(self._latest_source_counters.values()),
             expected_fences=self.end_fences,source_counters=self._source_counters,errors=errors,
             verification='failed' if errors else 'passed')
-        try:
-            if self.bag_path and self.bag_path.exists():
-                manifest['files']={p.name:dict(size=p.stat().st_size,sha256=_sha256_file(p))
-                    for p in self.bag_path.iterdir() if p.is_file()}
-                temporary=self.bag_path/'verification.json.tmp'; temporary.write_text(json.dumps(manifest,indent=2,sort_keys=True))
-                os.replace(temporary,self.bag_path/'verification.json')
-        except Exception as exc: errors.append('manifest write: '+str(exc))
-        with self._lock:
+            try:
+                if self.bag_path and self.bag_path.exists():
+                    manifest['files']={p.name:dict(size=p.stat().st_size,sha256=_sha256_file(p))
+                        for p in self.bag_path.iterdir() if p.is_file()}
+                    temporary=self.bag_path/'verification.json.tmp'; temporary.write_text(json.dumps(manifest,indent=2,sort_keys=True))
+                    os.replace(temporary,self.bag_path/'verification.json')
+            except Exception as exc: errors.append('manifest write: '+str(exc))
             self.state='incomplete' if errors else 'saved'; self.verification='failed' if errors else 'passed'
             self.reason='; '.join(errors[:8]) if errors else None
             self.revision+=1; self._last_trial_id=self.trial_id
             result=self._status()
+            self._remember_outcome()
         if self.on_status: self.on_status(result)
 
     def await_final(self,timeout=None):
@@ -467,6 +591,11 @@ class Collector:
                 if self.writer:
                     try: self.writer.close()
                     except Exception as exc: self.reason+='; writer close: '+str(exc)
+                self._remember_outcome()
+            elif self.state=='finalizing':
+                self._failures.append('phone disconnected during finalization')
+                self._accepting=False
+                self._condition.notify_all()
             else: self._abort_active('phone disconnected before stop')
 
 
@@ -482,6 +611,32 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
+class UsbClock:
+    """Bounded per-connection host PING ledger; an exchange is not a clock fit."""
+    def __init__(self,host_session_id):
+        self.host_session_id=host_session_id
+        self._next_id=0; self._pending={}; self._lock=threading.Lock()
+
+    def ping(self,send_ns):
+        with self._lock:
+            ping_id=self._next_id; self._next_id+=1
+            if len(self._pending)>=64: self._pending.pop(next(iter(self._pending)))
+            self._pending[ping_id]=send_ns
+        return dict(ping_id=ping_id,host_send_ns=send_ns)
+
+    def complete(self,pong,receipt_ns):
+        validate_metadata(MessageType.PONG,pong)
+        with self._lock: sent=self._pending.pop(pong['ping_id'],None)
+        if sent is None: return None
+        if sent!=pong['host_send_ns']: raise ValueError('PONG does not match host PING')
+        clock=dict(link='usb',exchange_id=f'usb:{self.host_session_id}:{pong["ping_id"]}',
+            source_id=pong['session_id'],epoch_id=pong['session_id'],
+            t1_ns=sent,t2_ns=pong['phone_receive_ns'],t3_ns=pong['phone_send_ns'],t4_ns=receipt_ns,
+            mapping=dict(valid=False,scale=None,offset_ns=None,uncertainty_ns=None))
+        validate_metadata(MessageType.BLE_CLOCK,clock)
+        return clock
+
+
 def serve(output_root,*,tcp=None,port=PORT,retry_s=1.0):
     """Connect outbound to the phone's USB listener; --tcp is an explicit test path."""
     collector=Collector(output_root)
@@ -493,6 +648,7 @@ def serve(output_root,*,tcp=None,port=PORT,retry_s=1.0):
             time.sleep(retry_s); continue
         with peer:
                 send_lock=threading.Lock(); stopped=threading.Event()
+                usb_clock=UsbClock(collector.host_session_id)
                 def send_status(status):
                     try:
                         with send_lock: peer.sendall(encode_packet(MessageType.TRIAL_STATUS,status))
@@ -506,7 +662,12 @@ def serve(output_root,*,tcp=None,port=PORT,retry_s=1.0):
                     collector.disconnect()
                     continue
                 def heartbeat():
-                    while not stopped.wait(0.5): send_status(collector.status())
+                    while not stopped.wait(0.5):
+                        send_status(collector.status())
+                        try:
+                            ping=usb_clock.ping(collector.now_ns())
+                            with send_lock: peer.sendall(encode_packet(MessageType.PING,ping))
+                        except OSError: stopped.set()
                 pulse=threading.Thread(target=heartbeat,daemon=True); pulse.start()
                 peer.settimeout(5.0)
                 while True:
@@ -517,6 +678,12 @@ def serve(output_root,*,tcp=None,port=PORT,retry_s=1.0):
                         if packet.message_type==MessageType.TRIAL_COMMAND:
                             status=collector.command(packet.metadata)
                             send_status(status)
+                        elif packet.message_type==MessageType.PONG:
+                            receipt_ns=collector.now_ns()
+                            complete=usb_clock.complete(packet.metadata,receipt_ns)
+                            if complete is not None:
+                                collector.ingest(Packet(MessageType.BLE_CLOCK,complete),received_ns=receipt_ns)
+                                with send_lock: peer.sendall(encode_packet(MessageType.BLE_CLOCK,complete))
                         else: collector.ingest(packet)
                     except (OSError,ValueError) as exc:
                         if packet.message_type==MessageType.TRIAL_COMMAND:

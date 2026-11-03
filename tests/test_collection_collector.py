@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from usi_stream.collection_protocol import MessageType, validate_metadata
-from usi_stream.collector import Collector
+from usi_stream.collector import Collector, UsbClock
 from usi_stream.collection_protocol import Packet
 from usi_stream.recorder import Record
 
@@ -84,7 +84,8 @@ def fake_records(packet,received_ns,wall_ns):
     meta=packet.metadata; kind=packet.message_type
     if kind==MessageType.FRAME:
         identities=[(s,meta['session_id'],meta['world_epoch_id'],meta['frame_seq'])
-                    for s in ('main_rgb','raw_depth','depth_confidence','camera_calibration')]
+                    for s in ('main_rgb',)+(('raw_depth',) if meta['depth'] is not None else ())+
+                             (('depth_confidence',) if meta['confidence'] is not None else ())]
     elif kind==MessageType.POSES:
         identities=[(stream,meta['session_id'],meta['world_epoch_id'],s['frame_seq'])
                     for s in meta['samples'] for stream in ('camera_pose','tracking')]
@@ -102,9 +103,13 @@ def fake_records(packet,received_ns,wall_ns):
             for s,source,epoch,seq in identities]
 
 
-def fake_static(snapshot,trial_id,wall_ns):
-    return Record('/usi_collection/trial_metadata','test/msg/Record',b'fixture',wall_ns,
-                  'trial_metadata',snapshot['session_id'],snapshot['session_id'],0)
+def fake_static(snapshot,trial_id,wall_ns,calibration,begin_sequence):
+    cap=next(c for c in snapshot['capabilities'] if c['stream_id']=='camera_calibration')
+    return [Record('/usi_collection/trial_metadata','test/msg/Record',b'fixture',wall_ns,
+                  'trial_metadata',snapshot['session_id'],snapshot['session_id'],0),
+            Record('/usi_collection/camera_calibration','test/msg/Record',b'fixture',wall_ns,
+                  'camera_calibration',cap['source_id'],cap['epoch_id'],begin_sequence,
+                  json.dumps(calibration,sort_keys=True,separators=(',',':')))]
 
 
 def host_at(root,store):
@@ -113,6 +118,12 @@ def host_at(root,store):
                    wall_ns=lambda:2_000_000_000,drain_timeout_s=0.01)
     for packet in packets(): host.ingest(packet)
     return host
+
+
+def add_control_evidence(host):
+    host.ingest(Packet(MessageType.BLE_CLOCK,example('collection_ble_clock')))
+    health=example('collection_health'); health['counters']=[]
+    host.ingest(Packet(MessageType.HEALTH,health))
 
 
 def command(action, revision, next_seq):
@@ -298,3 +309,166 @@ def test_cumulative_loss_counter_uses_begin_baseline(tmp_path):
     result=host.await_final(1)
     assert result['state']=='incomplete'
     assert 'source loss queue_overflow_count' in result['reason']
+
+
+def test_exclusive_stop_rejects_already_written_overrun_and_keeps_both_fences(tmp_path):
+    store=MemoryStore(); host=host_at(tmp_path,store)
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    for seq in (1,2):
+        for packet in packets(seq): host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,2)); result=host.await_final(2)
+    assert result['state']=='incomplete'
+    assert 'outside fence' in result['reason']
+    manifest=json.loads((Path(result['bag_path'])/'verification.json').read_text())
+    assert manifest['begin_fences']['main_rgb'][2]==1
+    assert manifest['end_fences']['main_rgb'][2]==2
+
+
+def test_prebegin_companions_are_not_written(tmp_path):
+    store=MemoryStore(); host=host_at(tmp_path,store)
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    for seq in (0,1):
+        for packet in packets(seq): host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,2)); assert host.await_final(2)['state']=='saved'
+    assert not [(r.stream_id,r.sequence) for r in store.records if r.sequence==0 and r.stream_id in ('tracking','seal')]
+
+
+def test_reopened_wrong_derived_join_is_incomplete(tmp_path):
+    from dataclasses import replace
+    class WrongJoin(MemoryStore):
+        def scan(self):
+            return [replace(r,source_id='wrong-source',sequence=999) if r.stream_id=='tracking' else r for r in self.records]
+    host=host_at(tmp_path,WrongJoin()); host.command(core_prepare()); host.command(command('begin',1,1))
+    for packet in packets(1): host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,2)); result=host.await_final(2)
+    assert result['state']=='incomplete'
+    assert 'derived join' in result['reason']
+
+
+def test_reopened_changed_frozen_calibration_is_incomplete(tmp_path):
+    from dataclasses import replace
+    class ChangedCalibration(MemoryStore):
+        def scan(self):
+            return [replace(r,details='{}') if r.stream_id=='camera_calibration' else r for r in self.records]
+    host=host_at(tmp_path,ChangedCalibration())
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    for packet in packets(1): host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,2))
+    result=host.await_final(2)
+    assert result['state']=='incomplete'
+    assert 'frozen camera calibration' in result['reason']
+
+
+def test_disconnect_during_drain_invalidates_late_completion(tmp_path):
+    host=host_at(tmp_path,MemoryStore()); host.command(core_prepare()); host.command(command('begin',1,1))
+    stream=packets(1)
+    for packet in stream[1:]: host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,2)); host.disconnect(); host.ingest(stream[0])
+    result=host.await_final(2)
+    assert result['state']=='incomplete'
+    assert 'disconnected' in result['reason']
+
+
+def test_unchanged_historical_health_loss_does_not_abort_recording(tmp_path):
+    host=host_at(tmp_path,MemoryStore())
+    health=example('collection_health'); health['counters'][0].update(queue_overflow_count=1,rejected_count=0,missing_ranges=[])
+    host.ingest(Packet(MessageType.HEALTH,health))
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    host.ingest(Packet(MessageType.HEALTH,health))
+    assert host.status()['state']=='recording'
+    host.disconnect(); host.await_final(2)
+
+
+def test_health_missing_range_outside_observed_interval_is_deferred(tmp_path):
+    host=host_at(tmp_path,MemoryStore())
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    health=example('collection_health')
+    health['counters'][0].update(queue_overflow_count=0,rejected_count=0,
+                                  missing_ranges=[dict(start=100,end_exclusive=101)])
+    host.ingest(Packet(MessageType.HEALTH,health))
+    assert host.status()['state']=='recording'
+    host.disconnect(); host.await_final(2)
+
+
+def test_old_trial_retry_and_status_are_scoped(tmp_path):
+    host=host_at(tmp_path,MemoryStore()); old=core_prepare()
+    host.command(old); host.command(command('begin',1,1))
+    for packet in packets(1): host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,2)); assert host.await_final(2)['state']=='saved'
+    new=core_prepare(); new.update(request_id='prepare-B',trial_id='trial-B',expected_revision=host.revision)
+    assert host.command(new)['trial_id']=='trial-B'
+    replay=host.command(old)
+    assert replay['trial_id']=='trial-A' and replay['state']=='saved'
+    lookup=dict(action='status',request_id='status-A',trial_id='trial-A',expected_revision=0)
+    assert host.command(lookup)['trial_id']=='trial-A'
+    with pytest.raises(ValueError,match='request_id'):
+        host.command(dict(lookup,trial_id='trial-B'))
+    host.disconnect()
+
+
+def test_calibration_frozen_at_begin_and_change_invalidates(tmp_path):
+    store=MemoryStore(); host=host_at(tmp_path,store)
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    assert len([r for r in store.records if r.stream_id=='camera_calibration'])==1
+    frame=packets(1)[0]; frame.metadata['source_image_size'][0]+=1
+    host.ingest(frame)
+    assert host.await_final(2)['state']=='incomplete'
+    assert 'camera calibration changed' in host.status()['reason']
+
+
+def test_intrinsic_variation_keeps_frozen_calibration_record(tmp_path):
+    store=MemoryStore(); host=host_at(tmp_path,store)
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    stream=packets(1); stream[0].metadata['intrinsics_row_major'][0]+=1
+    for packet in stream: host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,2))
+    assert host.await_final(2)['state']=='saved'
+    assert len([r for r in store.records if r.stream_id=='camera_calibration'])==1
+
+
+def test_missing_depth_on_one_frame_does_not_change_calibration(tmp_path):
+    host=host_at(tmp_path,MemoryStore())
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    for packet in packets(1): host.ingest(packet)
+    stream=packets(2)
+    frame=stream[0]; frame.metadata['depth']=None; frame.metadata['confidence']=None
+    frame=Packet(MessageType.FRAME,frame.metadata,b'abc')
+    for packet in (frame,*stream[1:]): host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,3))
+    assert host.await_final(2)['state']=='saved'
+
+
+def test_prepare_uses_calibration_from_prepared_camera_source(tmp_path):
+    host=host_at(tmp_path,MemoryStore())
+    other=packets(0)[0]
+    other.metadata['session_id']='other-session'; other.metadata['world_epoch_id']='other-world'
+    host.ingest(other)
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    for packet in packets(1): host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,2))
+    assert host.await_final(2)['state']=='saved'
+
+
+def test_completed_host_usb_exchange_is_persisted_as_timing(tmp_path):
+    store=MemoryStore(); host=host_at(tmp_path,store)
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    clock=UsbClock(host.host_session_id); ping=clock.ping(100)
+    pong=dict(ping_id=ping['ping_id'],host_send_ns=100,phone_receive_ns=120,
+              phone_send_ns=130,session_id='phone-A')
+    completed=clock.complete(pong,150)
+    host.ingest(Packet(MessageType.BLE_CLOCK,completed),received_ns=150)
+    for packet in packets(1): host.ingest(packet)
+    health=example('collection_health'); health['counters']=[]
+    host.ingest(Packet(MessageType.HEALTH,health))
+    host.command(command('stop',2,2))
+    assert host.await_final(2)['state']=='saved'
+    assert len([r for r in store.records if r.stream_id=='timing'])==1

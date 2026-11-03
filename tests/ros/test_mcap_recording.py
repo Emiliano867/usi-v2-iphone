@@ -108,6 +108,7 @@ def _core_trial_roundtrip(tmp_path,omitted_kind,expected_state):
         pressure['samples'][0]['raw_sequence']=seq
         trigger=example('collection_trigger'); trigger['sequence']=seq; trigger['raw_sequence']=seq
         return [Packet(MessageType.POSES,pose),Packet(MessageType.PRESSURE,pressure),Packet(MessageType.TRIGGER,trigger)]
+    from usi_stream.collector import UsbClock
     host=Collector(tmp_path,now_ns=lambda:1_000_000_000,wall_ns=lambda:2_000_000_000,
                    drain_timeout_s=0.05,generated_test_data=True)
     for packet in [frame(0),*sensor_packets(0)]: host.ingest(packet)
@@ -130,9 +131,13 @@ def _core_trial_roundtrip(tmp_path,omitted_kind,expected_state):
                 for s,source,epoch in lanes]
     begin=dict(action='begin',request_id='begin',trial_id=prepare['trial_id'],expected_revision=1,fences=fences(1))
     assert host.command(begin)['state']=='recording'
+    usb=UsbClock(host.host_session_id)
+    ping=usb.ping(1_000_000_000)
+    usb_exchange=usb.complete(dict(ping_id=ping['ping_id'],host_send_ns=ping['host_send_ns'],
+        phone_receive_ns=1_000_000_050,phone_send_ns=1_000_000_100,session_id='phone-A'),1_000_000_200)
     health=example('collection_health'); health['counters']=[]
     for packet in [frame(1),*sensor_packets(1),
-                   Packet(MessageType.BLE_CLOCK,example('collection_ble_clock')),
+                   Packet(MessageType.BLE_CLOCK,usb_exchange),
                    Packet(MessageType.HEALTH,health)]:
         if packet.message_type!=omitted_kind: host.ingest(packet)
     stop=dict(action='stop',request_id='stop',trial_id=prepare['trial_id'],expected_revision=2,
@@ -146,9 +151,26 @@ def _core_trial_roundtrip(tmp_path,omitted_kind,expected_state):
     assert manifest['reopened_counts'].get('raw_depth',0)==(0 if omitted_kind==MessageType.FRAME else 1)
     assert manifest['reopened_counts'].get('pressures',0)==(0 if omitted_kind==MessageType.PRESSURE else 1)
     assert manifest['reopened_counts']['trial_metadata']==1
+    assert manifest['reopened_counts']['camera_calibration']==1
+    assert manifest['reopened_counts']['timing']==1
     if expected_state=='saved':
         assert len(result['counters'])==12
         assert next(c for c in result['counters'] if c['stream_id']=='pressures')['writer_accepted_count']==1
+        import rosbag2_py
+        from rclpy.serialization import deserialize_message
+        from usi_collection_msgs.msg import ClockRecord
+        reader=rosbag2_py.SequentialReader()
+        reader.open(rosbag2_py.StorageOptions(uri=result['bag_path'],storage_id='mcap'),
+                    rosbag2_py.ConverterOptions('cdr','cdr'))
+        clocks=[]
+        while reader.has_next():
+            topic,data,_=reader.read_next()
+            if topic=='/usi_collection/timing': clocks.append(deserialize_message(data,ClockRecord))
+        reader.close()
+        assert len(clocks)==1 and clocks[0].link=='usb'
+        assert [getattr(clocks[0],key) for key in ('t1_ns','t2_ns','t3_ns','t4_ns')]==[
+            1_000_000_000,1_000_000_050,1_000_000_100,1_000_000_200]
+        assert not clocks[0].mapping_valid
 
 
 if __name__=='__main__':

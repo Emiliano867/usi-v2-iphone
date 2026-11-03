@@ -70,6 +70,30 @@ def _legacy_boot_number(boot_id):
         if value<=2**64-1: return value
     return int.from_bytes(hashlib.sha256(boot_id.encode('utf-8')).digest()[:8],'big')
 
+def camera_calibration_snapshot(meta):
+    """Freeze prepared calibration; JPEG length and per-frame K may vary."""
+    return dict(intrinsics_row_major=meta['intrinsics_row_major'],
+        rgb_intrinsics_row_major=meta['rgb_intrinsics_row_major'],
+        source_image_size=meta['source_image_size'],
+        rgb={k:meta['rgb'][k] for k in ('encoding','width','height')},
+        depth=None if meta['depth'] is None else {k:meta['depth'][k] for k in ('encoding','width','height','association')},
+        confidence=None if meta['confidence'] is None else {k:meta['confidence'][k] for k in ('encoding','width','height')},
+        world_frame=meta['world_frame'],camera_frame=meta['camera_frame'],
+        image_orientation=meta['image_orientation'],world_epoch_id=meta['world_epoch_id'])
+
+def camera_format(snapshot):
+    return {k:snapshot[k] for k in ('source_image_size','rgb','world_frame',
+                                    'camera_frame','image_orientation','world_epoch_id')}
+
+def compatible_camera_format(current,prepared):
+    if camera_format(current)!=camera_format(prepared): return False
+    # Depth/confidence are actually delivered at an independent cadence. Their
+    # absence on an RGB frame cannot redefine the prepared camera format.
+    for stream in ('depth','confidence'):
+        if current[stream] is not None and prepared[stream] is not None and current[stream]!=prepared[stream]:
+            return False
+    return True
+
 def _legacy_timing(stream,sample,meta,wall,bridge_counts):
     from std_msgs.msg import UInt64MultiArray
     number=bridge_counts.get(stream,0)
@@ -129,13 +153,6 @@ def records_for_packet(packet,host_receive_monotonic_ns,host_receive_wall_ns,sea
                 msg.depth_valid_mask=_depth_mask(data)
             else: msg.confidence_level=list(data)
             records.append(_serialize('/usi_collection/'+stream,msg,stream,msg.source.source_id,msg.source.epoch_id,seq,wall))
-        if base=='main_rgb':
-            cal=_source('camera_calibration',meta,seq,mono,wall)
-            cal.metadata_json=_json(dict(intrinsics_row_major=meta['intrinsics_row_major'],
-                rgb_intrinsics_row_major=meta['rgb_intrinsics_row_major'],
-                source_image_size=meta['source_image_size'],rgb=meta['rgb'],depth=meta['depth'],
-                confidence=meta['confidence'],world_epoch_id=meta['world_epoch_id']))
-            records.append(_serialize('/usi_collection/camera_calibration',cal,'camera_calibration',cal.source_id,cal.epoch_id,seq,wall))
     elif kind == MessageType.POSES:
         for sample in meta['samples']:
             msg=_source('camera_pose',meta,sample['frame_seq'],mono,wall,sample=sample)
