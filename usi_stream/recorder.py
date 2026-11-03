@@ -117,7 +117,7 @@ class JazzyMcapStore:
         reader.open(rosbag2_py.StorageOptions(uri=str(self.path),storage_id='mcap'),
                     rosbag2_py.ConverterOptions('cdr','cdr'))
         types={t.name:t.type for t in reader.get_all_topics_and_types()}
-        result=[]; decoded=[]
+        result=[]; compact=[]
         try:
             while reader.has_next():
                 topic,data,stamp=reader.read_next()
@@ -133,12 +133,25 @@ class JazzyMcapStore:
                     stream,getattr(source,'source_id',''),
                     getattr(source,'epoch_id',''),getattr(source,'sequence',0),
                     getattr(source,'metadata_json',None) if stream in ('camera_calibration','tracking','seal') else None))
-                decoded.append(msg)
+                # Keep only the scalar evidence needed for reopened joins. In
+                # particular, never retain a FrameRecord's image/depth arrays.
+                if stream=='trial_metadata': evidence=dict(calibration_id=msg.calibration_id)
+                elif stream=='camera_pose': evidence=dict(metadata_json=msg.metadata_json)
+                elif stream=='pressures': evidence=dict(pressure_centi_pa=tuple(msg.pressure_centi_pa),
+                    quality_mask=msg.quality_mask,source_time_us=source.source_time_us,
+                    raw_sequence=source.raw_sequence)
+                elif stream=='trigger': evidence=dict(pressed=msg.pressed,suction_on=msg.suction_on,
+                    source_time_us=source.source_time_us,raw_sequence=source.raw_sequence)
+                elif topic=='/pressure': evidence=dict(vector=(msg.vector.x,msg.vector.y,msg.vector.z))
+                elif topic=='/trigger': evidence=dict(buttons=tuple(msg.buttons),axes=tuple(msg.axes))
+                elif topic in ('/pressure_timing','/trigger_timing'): evidence=dict(data=tuple(msg.data))
+                else: evidence=None
+                compact.append(evidence)
         finally: reader.close()
         from .ros_messages import _legacy_boot_number
         by_identity={(r.stream_id,r.source_id,r.epoch_id,r.sequence):i for i,r in enumerate(result) if r.stream_id}
-        trials=[decoded[i] for i,r in enumerate(result) if r.stream_id=='trial_metadata']
-        trial_calibration_id=trials[0].calibration_id or None if len(trials)==1 else None
+        trials=[compact[i] for i,r in enumerate(result) if r.stream_id=='trial_metadata']
+        trial_calibration_id=trials[0]['calibration_id'] or None if len(trials)==1 else None
         for index,record in enumerate(result):
             if record.stream_id not in ('tracking','seal'): continue
             parent_stream='camera_pose' if record.stream_id=='tracking' else 'pressures'
@@ -146,7 +159,7 @@ class JazzyMcapStore:
             if parent_index is None: raise ValueError('derived join missing parent: '+record.stream_id)
             content=json.loads(record.details)
             if record.stream_id=='tracking':
-                pose=json.loads(decoded[parent_index].metadata_json)
+                pose=json.loads(compact[parent_index]['metadata_json'])
                 if any(content.get(field)!=pose[field] for field in ('tracking_state','tracking_reason','pose_valid')):
                     raise ValueError('tracking content differs from pose')
             elif (content.get('pressure_sequence')!=record.sequence or
@@ -164,21 +177,20 @@ class JazzyMcapStore:
                 key=record.stamp_ns; offset=used.get(key,0); matches=parents.get(key,[])
                 if offset>=len(matches): raise ValueError('legacy join missing parent: '+topic)
                 used[key]=offset+1; parent_index=matches[offset]
-                parent=result[parent_index]; original=decoded[parent_index]; legacy=decoded[index]
+                parent=result[parent_index]; original=compact[parent_index]; legacy=compact[index]
                 if topic=='/pressure':
-                    expected=[value/100 for value in original.pressure_centi_pa]
-                    actual=[legacy.vector.x,legacy.vector.y,legacy.vector.z]
+                    expected=[value/100 for value in original['pressure_centi_pa']]
+                    actual=legacy['vector']
                     if any(abs(a-b)>1e-6 for a,b in zip(actual,expected)):
                         raise ValueError('legacy pressure value mismatch')
                 elif topic=='/trigger':
-                    if list(legacy.buttons)!=[int(original.pressed),int(original.suction_on)] or list(legacy.axes):
+                    if list(legacy['buttons'])!=[int(original['pressed']),int(original['suction_on'])] or legacy['axes']:
                         raise ValueError('legacy trigger value mismatch')
                 else:
-                    source=original.source
-                    expected=[source.source_time_us,parent.stamp_ns,1]
-                    if topic=='/pressure_timing': expected.append(original.quality_mask)
-                    expected.extend((_legacy_boot_number(parent.epoch_id),source.raw_sequence))
-                    if len(legacy.data)!=len(expected)+1 or list(legacy.data)[1:]!=expected:
+                    expected=[original['source_time_us'],parent.stamp_ns,1]
+                    if topic=='/pressure_timing': expected.append(original['quality_mask'])
+                    expected.extend((_legacy_boot_number(parent.epoch_id),original['raw_sequence']))
+                    if len(legacy['data'])!=len(expected)+1 or list(legacy['data'])[1:]!=expected:
                         raise ValueError('legacy timing value mismatch: '+topic)
                 result[index]=replace(record,source_id=parent.source_id,
                                       epoch_id=parent.epoch_id,sequence=parent.sequence)

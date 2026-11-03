@@ -395,6 +395,37 @@ def test_health_missing_range_outside_observed_interval_is_deferred(tmp_path):
     host.disconnect(); host.await_final(2)
 
 
+def test_deferred_health_gap_inside_final_fence_fails_without_stop_counters(tmp_path):
+    host=host_at(tmp_path,MemoryStore())
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    health=example('collection_health')
+    health['counters'][0].update(queue_overflow_count=0,rejected_count=0,
+                                  missing_ranges=[dict(start=1,end_exclusive=2)])
+    host.ingest(Packet(MessageType.HEALTH,health))
+    assert host.status()['state']=='recording'
+    for packet in packets(1): host.ingest(packet)
+    add_control_evidence(host)
+    stop=command('stop',2,2); stop['counters']=[]
+    host.command(stop)
+    result=host.await_final(2)
+    assert result['state']=='incomplete'
+    assert 'observed source missing range' in result['reason']
+
+
+def test_historical_health_gap_outside_final_fence_does_not_fail(tmp_path):
+    host=host_at(tmp_path,MemoryStore())
+    health=example('collection_health')
+    health['counters'][0].update(queue_overflow_count=0,rejected_count=0,
+                                  missing_ranges=[dict(start=0,end_exclusive=1)])
+    host.ingest(Packet(MessageType.HEALTH,health))
+    host.command(core_prepare()); host.command(command('begin',1,1))
+    host.ingest(Packet(MessageType.HEALTH,health))
+    for packet in packets(1): host.ingest(packet)
+    add_control_evidence(host)
+    host.command(command('stop',2,2))
+    assert host.await_final(2)['state']=='saved'
+
+
 def test_old_trial_retry_and_status_are_scoped(tmp_path):
     host=host_at(tmp_path,MemoryStore()); old=core_prepare()
     host.command(old); host.command(command('begin',1,1))

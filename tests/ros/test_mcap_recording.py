@@ -35,6 +35,38 @@ def test_generated_mcap_closes_reopens_and_deserializes(tmp_path):
     _run_child('direct',tmp_path)
 
 
+def test_reopen_releases_frame_payloads_while_scanning(tmp_path,monkeypatch):
+    """A long bag must not retain every decoded image until EOF."""
+    import rosbag2_py
+    import rclpy.serialization
+    from types import SimpleNamespace
+    from usi_stream import ros_messages
+    class Frame:
+        live=0; peak=0
+        def __init__(self):
+            self.source=SimpleNamespace(stream_id='main_rgb',source_id='phone',epoch_id='world',sequence=Frame.live)
+            self.rgb_jpeg=bytearray(200_000)
+            Frame.live+=1; Frame.peak=max(Frame.peak,Frame.live)
+        def __del__(self): Frame.live-=1
+    class Reader:
+        def __init__(self): self.index=0
+        def open(self,*_): pass
+        def get_all_topics_and_types(self):
+            return [SimpleNamespace(name='/usi_collection/main_rgb',type='usi_collection_msgs/msg/FrameRecord')]
+        def has_next(self): return self.index<24
+        def read_next(self):
+            self.index+=1
+            return '/usi_collection/main_rgb',b'x',self.index
+        def close(self): pass
+    monkeypatch.setattr(rosbag2_py,'SequentialReader',Reader)
+    monkeypatch.setattr(rclpy.serialization,'deserialize_message',lambda *_: Frame())
+    monkeypatch.setattr(ros_messages,'validate_reopened_frame',lambda _: None)
+    store=JazzyMcapStore(); store.path=tmp_path
+    assert len(store.scan())==24
+    assert Frame.peak<=2
+    assert Frame.live==0
+
+
 def _direct_mcap_roundtrip(tmp_path):
     from rosidl_runtime_py.utilities import get_message
     frame=example('collection_frame')

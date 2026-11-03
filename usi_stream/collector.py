@@ -52,6 +52,7 @@ class Collector:
         self._accepting=False
         self._source_times={}; self._begin_ns=None; self._end_ns=None
         self._latest_source_counters={}; self._begin_source_counters={}
+        self._observed_missing_ranges=set()
         self._legacy_bridge_counts={'pressures':0,'trigger':0}
         self._camera_calibrations={}; self._prepared_camera_calibration=None
 
@@ -184,6 +185,7 @@ class Collector:
         self.duplicate_counts={}; self.rejected_counts={}
         self._source_counters=[]; self._failures=[]; self.writer=None; self.store=None; self.bag_path=None
         self._source_times={}; self._begin_ns=None; self._end_ns=None
+        self._observed_missing_ranges=set()
         self.seal_model=None
         main=next((c for c in self.snapshot['capabilities'] if c['stream_id']=='main_rgb'),None)
         self._prepared_camera_calibration=copy.deepcopy(
@@ -335,6 +337,12 @@ class Collector:
                 for counter in meta['counters']:
                     key=(counter['stream_id'],counter['source_id'],counter['epoch_id'])
                     self._latest_source_counters[key]=counter
+                    if self._accepting and self.state in ('recording','finalizing'):
+                        for gap in counter['missing_ranges']:
+                            evidence=(*key,gap['start'],gap['end_exclusive'])
+                            if len(self._observed_missing_ranges)>=4096 and evidence not in self._observed_missing_ranges:
+                                self._failures.append('source missing-range evidence limit')
+                            else: self._observed_missing_ranges.add(evidence)
             if kind==MessageType.HEALTH and self.snapshot and self.state in ('recording','finalizing'):
                 required=set(self.snapshot['required_streams'])
                 prepared={c['stream_id']:c for c in self.snapshot['capabilities']}
@@ -528,6 +536,10 @@ class Collector:
                 if baseline and baseline['received_count'] is not None and counter['received_count'] is not None:
                     if counter['received_count']-baseline['received_count']<end-start:
                         errors.append('phone received count shortfall: '+lane)
+        for lane,source,epoch,gap_start,gap_end in self._observed_missing_ranges:
+            fence=self.begin_fences.get(lane)
+            if fence and (source,epoch)==fence[:2] and gap_start<self.end_fences[lane][2] and gap_end>fence[2]:
+                errors.append('observed source missing range: '+lane)
         if self.writer.overflow: errors.append('writer queue overflow')
         counts={s:sum(r.stream_id==s for r in records) for s in sorted(present) if s}
         legacy_topic_counts={topic:sum(r.topic==topic for r in records)
@@ -562,6 +574,8 @@ class Collector:
             begin_fences=self.begin_fences,end_fences=self.end_fences,
             begin_source_counters=list(self._begin_source_counters.values()),
             observed_source_counters=list(self._latest_source_counters.values()),
+            observed_missing_ranges=[dict(stream_id=lane,source_id=source,epoch_id=epoch,
+                start=start,end_exclusive=end) for lane,source,epoch,start,end in sorted(self._observed_missing_ranges)],
             expected_fences=self.end_fences,source_counters=self._source_counters,errors=errors,
             verification='failed' if errors else 'passed')
             try:
