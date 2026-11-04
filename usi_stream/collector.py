@@ -105,7 +105,7 @@ class Collector:
                 missing_ranges=final['missing_ranges'] if final and final['source_id']==source and final['epoch_id']==epoch else []))
         result=dict(host_session_id=self.host_session_id,host_time_ns=self.now_ns(),
             request_id=request_id,trial_id=self.trial_id,revision=self.revision,
-            state=self.state,ready=self.state=='idle' or (self.state=='preparing' and not unavailable and self.writer is not None and not self.writer.error),
+            state=self.state,ready=self.state in ('idle','saved','incomplete') or (self.state=='preparing' and not unavailable and self.writer is not None and not self.writer.error),
             profile=self.snapshot['profile'] if self.snapshot else None,
             required_streams=required,missing_modalities=missing,
             missing_required_streams=unavailable,reason=self.reason,
@@ -355,13 +355,7 @@ class Collector:
                     if counter['stream_id'] in required and self._counter_loss(counter):
                         self._failures.append('reported source loss: '+counter['stream_id'])
             if kind==MessageType.FRAME:
-                previous=self._latest_frame_counters.get(meta['stream_id'])
-                current=meta['counters']
-                if self._accepting:
-                    baseline=self._begin_frame_counters.get(meta['stream_id'],previous or current)
-                    if current['encode_drops']>baseline['encode_drops'] or current['transport_drops']>baseline['transport_drops']:
-                        self._failures.append('image source loss: '+meta['stream_id'])
-                self._latest_frame_counters[meta['stream_id']]=current
+                self._latest_frame_counters[meta['stream_id']]=meta['counters']
             if self.state not in ('recording','finalizing'): return
             if not self._accepting:
                 return
@@ -384,6 +378,17 @@ class Collector:
                 accepted.append(key)
             if identities and not accepted:
                 self._expire_if_needed(); return
+            if kind==MessageType.FRAME:
+                lane=meta['stream_id']
+                key=(lane,meta['session_id'],meta['world_epoch_id'])
+                # Explicit acquisition-prefix counters can be unknown while an older
+                # encoder ticket is pending. Its later failure raises FRAME lifetime
+                # totals without losing an in-trial identity. Use prefix counters and
+                # complete [Begin,Stop) identity coverage in that case, not lifetime deltas.
+                if key not in self._begin_source_counters:
+                    baseline=self._begin_frame_counters.get(lane,meta['counters'])
+                    if any(meta['counters'][field]>baseline[field] for field in ('encode_drops','transport_drops')):
+                        self._failures.append('image source loss: '+lane)
             if kind==MessageType.FRAME and meta['stream_id']=='main_rgb':
                 from .ros_messages import camera_calibration_snapshot,compatible_camera_format
                 current=camera_calibration_snapshot(meta)
@@ -662,8 +667,15 @@ def serve(output_root,*,tcp=None,port=PORT,retry_s=1.0):
             time.sleep(retry_s); continue
         with peer:
                 send_lock=threading.Lock(); stopped=threading.Event()
+                last_status=[None]
                 usb_clock=UsbClock(collector.host_session_id)
                 def send_status(status):
+                    summary=(status['trial_id'],status['revision'],status['state'],status['verification'],status['reason'],status['bag_path'])
+                    if summary!=last_status[0]:
+                        last_status[0]=summary
+                        print('collection '+status['state']+
+                              (' | '+status['reason'] if status['reason'] else '')+
+                              (' | '+status['bag_path'] if status['bag_path'] else ''),flush=True)
                     try:
                         with send_lock: peer.sendall(encode_packet(MessageType.TRIAL_STATUS,status))
                     except OSError: stopped.set()

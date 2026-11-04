@@ -9,6 +9,7 @@ struct USIFrameSnapshot {
     let image: CVPixelBuffer
     let depth: CVPixelBuffer?
     let confidence: CVPixelBuffer?
+    var recordingTicket: USICameraEncodeTicket? = nil
 }
 
 struct USIEncodedFrame {

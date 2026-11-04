@@ -228,6 +228,32 @@ def test_known_image_encode_loss_fails_full_inventory(tmp_path):
     assert 'image source loss' in result['reason']
 
 
+def test_frame_outside_trial_cannot_add_lifetime_drop_loss(tmp_path):
+    host=host_at(tmp_path,MemoryStore()); host.command(core_prepare())
+    host.command(command('begin',1,1))
+    old=packets(0)[0]; old.metadata['counters']['encode_drops']=1
+    host.ingest(old)
+    assert host.status()['state']=='recording'
+
+
+def test_explicit_camera_prefix_counters_do_not_attribute_old_encode_to_trial(tmp_path):
+    host=host_at(tmp_path,MemoryStore()); host.command(core_prepare())
+    health=example('collection_health')
+    health['counters']=[dict(stream_id='main_rgb',source_id='session-A',epoch_id='world-A',
+        source_count=1,received_count=1,writer_accepted_count=None,queue_overflow_count=None,
+        rejected_count=None,duplicate_count=0,missing_ranges=[])]
+    host.ingest(Packet(MessageType.HEALTH,health))
+    host.command(command('begin',1,1))
+    stream=packets(1); stream[0].metadata['counters']['encode_drops']=1
+    for packet in stream: host.ingest(packet)
+    assert host.status()['state']=='recording'
+    add_control_evidence(host)
+    host.command(command('stop',2,2))
+    result=host.await_final(1)
+    assert result['state']=='saved',result['reason']
+    assert result['ready'] is True, 'A completed host must accept the next trial'
+
+
 def test_stale_required_source_revokes_recording(tmp_path):
     clock=[1_000_000_000]
     host=Collector(tmp_path,storage_factory=MemoryStore,record_factory=fake_records,

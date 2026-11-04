@@ -13,6 +13,8 @@ final class USIBLECentral: NSObject, CBCentralManagerDelegate, CBPeripheralDeleg
     var onRejected: (() -> Void)?
     /// firstReceivedNs is the actual first notification callback time, including CLOCK t4.
     var onEvent: ((USIBLEEvent, UInt64, UInt64) -> Void)?
+    /// CoreBluetooth's local opaque identity, not a MAC address or phone identifier.
+    var sourceIdentifier: String? { peripheral.map { "ble:" + $0.identifier.uuidString } }
     private let queue: DispatchQueue
     private var manager: CBCentralManager!
     private var active = false

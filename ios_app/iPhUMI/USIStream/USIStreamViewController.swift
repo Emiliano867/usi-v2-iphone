@@ -16,6 +16,11 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
     private var sensorLink = "Bluetooth · starting"
     private var sensorUIPending = false
     private var sensorDetails = "Bluetooth telemetry has not started." // main queue
+    private var recorder: USIRecorderSession? // captureQueue only
+    private var recorderDetails = "Recorder is starting." // main queue
+    private var trialFrozen = false // main queue
+    private var trialNumber = 1 // main queue
+    private var displayedTrialID: String?
     private let content = USICollectionView(frame: .zero)
     private var nativePreview: ARView?
     private weak var diagnostics: USIDiagnosticsViewController?
@@ -30,6 +35,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
     private var encodeDrops: UInt64 = 0
     private var encoding = false
     private var pending: USIFrameSnapshot?
+    private var recordingPending: [USIFrameSnapshot] = [] // bounded by runtime tickets
     private var lastPreviewTime: TimeInterval = -.infinity
     private var lastStatusTime: TimeInterval = -.infinity
     private var rateStart: TimeInterval = 0
@@ -42,12 +48,8 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         content.onHome = { [weak self] in self?.closePressed() }
         content.onData = { [weak self] in self?.showDiagnostics() }
         content.onSettings = { [weak self] in self?.showSettings() }
-        content.onStart = { [weak self] in
-            let alert = UIAlertController(title: "Recorder not connected",
-                message: "Trial recording is not connected in this UI build. Live camera streaming continues; no trial has been started.", preferredStyle: .alert)
-            alert.addAction(UIAlertAction(title: "OK", style: .default))
-            self?.present(alert, animated: true)
-        }
+        content.onStart = { [weak self] in self?.trialAction(start: true) }
+        content.onStop = { [weak self] in self?.trialAction(start: false) }
         let cameraView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
         cameraView.session = session
         content.installNativePreview(cameraView)
@@ -56,7 +58,6 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         usb.onStatus = { [weak self] text in
             guard let self else { return }
             self.usbStatus = text
-            self.content.setUSBStatus(text)
             self.updateDiagnostics()
         }
         session.delegate = self
@@ -103,6 +104,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
 
     private func showSettings() {
         guard presentedViewController == nil else { return }
+        guard !trialFrozen else { showTrialError("Finish or resolve the current trial before changing settings."); return }
         let controller = USICollectionSettingsViewController()
         controller.onSave = { [weak self] in self?.updateSessionLabel(); self?.updateDiagnostics() }
         controller.onReference = { [weak self] completion in
@@ -115,7 +117,11 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         controller.onUseCalibration = { [weak self] profile in
             guard let self else { return }
             let calibration = try? profile?.calibration()
-            self.captureQueue.async { self.sensors.selectCalibration(calibration) }
+            self.captureQueue.async {
+                self.sensors.selectCalibration(calibration)
+                do { try self.recorder?.selectCalibration(calibration) }
+                catch { DispatchQueue.main.async { self.showTrialError("Calibration is locked during this trial.") } }
+            }
             self.updateDiagnostics()
         }
         controller.modalPresentationStyle = .overFullScreen
@@ -129,12 +135,35 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         content.setSession("\(session)\n\(task)")
     }
 
+    private func trialAction(start: Bool) {
+        captureQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                guard let recorder = self.recorder else { throw USICollectionError.invalid("Recorder is starting") }
+                if start { try recorder.beginTrial() }
+                else { try recorder.endTrial() }
+                self.publishSensorUpdate()
+            } catch {
+                let message: String
+                if case USICollectionError.invalid(let reason) = error { message = reason }
+                else { message = error.localizedDescription }
+                DispatchQueue.main.async { self.showTrialError(message) }
+            }
+        }
+    }
+    private func showTrialError(_ message: String) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Trial status", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: !UIAccessibility.isReduceMotionEnabled)
+    }
+
     private func updateDiagnostics() {
         let version = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "?"
         let buildNumber = (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "?"
         let revision = (Bundle.main.object(forInfoDictionaryKey: "USIUIRevision") as? String) ?? "local"
         let defaults = UserDefaults.standard
-        diagnostics?.details = "Session: \(defaults.string(forKey: "usi.session") ?? "Untitled")\nTask: \(defaults.string(forKey: "usi.task") ?? "Not set")\nGripper: \(defaults.string(forKey: "usi.gripper") ?? "Not set")\nCalibration label: \(defaults.string(forKey: "usi.calibration") ?? "Not set")\n\n\(usbStatus)\n\n\(captureDetails.diagnostics)\n\nBLUETOOTH TELEMETRY\n\(sensorDetails)\n\nDATA STREAMS\nMain RGB: live ARKit, native preview\nDepth / confidence: captured when supplied by ARKit; depth visualization 0–2 m\nCamera pose / tracking / intrinsics: included in USB camera stream\nUltrawide: unavailable in this ARKit capture path\nPressure C1/C2/C3 and trigger: live BLE reception when rig is subscribed\nSuction: trigger-derived command state; no measured pump feedback\nSeal calibration: capture Open and Sealed in Settings; gray until a measured calibration is saved\nSensor USB forwarding and host trial recording: integration pending\n\nTrial: not recording · saved bag: unavailable\nCamera pose only; tool calibration required.\n\nSuction UMI v2 · live sensors · version \(version) (\(buildNumber))"
+        diagnostics?.details = "Session: \(defaults.string(forKey: "usi.session") ?? "Untitled")\nTask: \(defaults.string(forKey: "usi.task") ?? "Not set")\nGripper: \(defaults.string(forKey: "usi.gripper") ?? "Not set")\nCalibration label: \(defaults.string(forKey: "usi.calibration") ?? "Not set")\n\n\(usbStatus)\n\n\(captureDetails.diagnostics)\n\nBLUETOOTH TELEMETRY\n\(sensorDetails)\n\nRECORDER\n\(recorderDetails)\n\nDATA STREAMS\nMain RGB: live ARKit, native preview\nDepth / confidence: captured when supplied by ARKit; depth visualization 0–2 m\nCamera pose / tracking / intrinsics: included in USB camera stream\nUltrawide: unavailable in this ARKit capture path\nPressure C1/C2/C3 and trigger: live BLE reception when rig is subscribed\nSuction: trigger-derived command state; no measured pump feedback\nSeal calibration: capture Open and Sealed in Settings; gray until a measured calibration is saved\nCore streams and trial controls use USB port 5559. Recording/Saved state comes from the Ubuntu recorder.\nCamera pose only; tool calibration required.\n\nSuction UMI v2 · collection · version \(version) (\(buildNumber))"
         if let diagnostics { diagnostics.details += "\nSource revision: \(revision)" }
     }
 
@@ -150,6 +179,8 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             self.running = false
             self.session.pause()
             self.pending = nil
+            self.recordingPending.removeAll()
+            self.recorder?.stop()
             self.usb.stop()
             self.sensorTimer?.cancel()
             self.sensorTimer = nil
@@ -174,6 +205,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             self.sequence = 0
             self.encodeDrops = 0
             self.pending = nil
+            self.recordingPending.removeAll()
             self.rateStart = 0
             self.rateFrames = 0
             self.lastPreviewTime = -.infinity
@@ -187,6 +219,19 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
                 configuration.frameSemantics.insert(.sceneDepth)
             }
+            if self.recorder == nil {
+                do {
+                    let recorder = try USIRecorderSession(queue: self.captureQueue, epochID: self.sessionID)
+                    recorder.requestClock = { [weak self] id, time in self?.ble.requestClock(requestID: id, t1PhoneNs: time) ?? false }
+                    recorder.onStatus = { [weak self] text in
+                        DispatchQueue.main.async { self?.content.setUSBStatus(text) }
+                    }
+                    self.recorder = recorder
+                } catch {
+                    DispatchQueue.main.async { self.showTrialError("Recorder initialization failed: \(error)") }
+                }
+            }
+            self.recorder?.start(epochID: self.sessionID, fps: Double(configuration.videoFormat.framesPerSecond))
             self.usb.start(sessionID: self.sessionID)
             self.usb.resetSession(self.sessionID)
             self.running = true
@@ -200,12 +245,19 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         guard sensorTimer == nil else { return }
         sensors.selectCalibration(try? USISealCalibrationProfile.load()?.calibration())
         ble.onStatus = { [weak self] in self?.sensorLink = $0 }
-        ble.onSubscribed = { [weak self] in self?.sensors.connect() }
-        ble.onDisconnected = { [weak self] in self?.sensors.disconnect() }
-        ble.onRejected = { [weak self] in self?.sensors.reject() }
-        ble.onEvent = { [weak self] event, firstReceivedNs, _ in
+        ble.onSubscribed = { [weak self] in
             guard let self else { return }
-            do { try self.sensors.receive(event, receivedNs: firstReceivedNs) }
+            self.sensors.connect()
+            if let source = self.ble.sourceIdentifier { self.recorder?.subscribed(sourceID: source) }
+        }
+        ble.onDisconnected = { [weak self] in self?.sensors.disconnect(); self?.recorder?.disconnectedBLE() }
+        ble.onRejected = { [weak self] in self?.sensors.reject(); self?.recorder?.rejectedBLE() }
+        ble.onEvent = { [weak self] event, firstReceivedNs, completedNs in
+            guard let self else { return }
+            do {
+                try self.sensors.receive(event, receivedNs: firstReceivedNs)
+                self.recorder?.receiveBLE(event, first: firstReceivedNs, completed: completedNs)
+            }
             catch {
                 self.sensors.reject()
                 self.ble.reconnectAfterFailure("Bluetooth · source changed; reconnecting")
@@ -221,14 +273,30 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
 
     private func publishSensorUpdate() {
         dispatchPrecondition(condition: .onQueue(captureQueue))
+        recorder?.tick()
         // At most one display snapshot waits for main; no UI block is queued per sample.
         guard !sensorUIPending else { return }
         sensorUIPending = true
         let snapshot = sensors.snapshot(nowNs: DispatchTime.now().uptimeNanoseconds)
+        let trial = recorder?.rendering()
+        let recordingDetails = recorder?.diagnostics() ?? "Recorder unavailable"
         let status = sensorLink
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             if self.visible {
+                self.recorderDetails = recordingDetails
+                if let trial {
+                    self.trialFrozen = trial.configurationFrozen
+                    if let id = trial.trialID, id != self.displayedTrialID {
+                        if self.displayedTrialID != nil { self.trialNumber += 1 }
+                        self.displayedTrialID = id
+                    }
+                    let elapsed = trial.elapsedNs.map { String(format: "Time %.1f s", Double($0) / 1e9) } ?? "Time —"
+                    let state = trial.unknownReason != nil ? "Unknown · see Data" :
+                        (trial.recordingAssured ? "Recording" : trial.state.rawValue.replacingOccurrences(of: "_", with: " ").capitalized)
+                    self.content.applyTrial(number: self.trialNumber, state: state,
+                        elapsedText: elapsed + (trial.state == .saved ? " · MCAP verified" : ""), recording: trial.stopEnabled)
+                }
                 let states: [USISealView.State] = snapshot.seal.states.map {
                     $0 == .sealed ? .sealed : $0 == .unsealed ? .unsealed : .unknown
                 }
@@ -275,11 +343,23 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             "thermal_state": thermalDescription(),
             "counters": ["acquired_frames": sequence, "encode_drops": encodeDrops, "transport_drops": UInt64(0)]
         ]
-        let snapshot = USIFrameSnapshot(sessionID: sessionID, metadata: metadata,
+        let pose = USICameraPose(arkitTimestampS: frame.timestamp,
+            phoneUptimeNs: metadata["phone_uptime_ns"] as! UInt64, transform: matrix,
+            positionM: [Double(transform.columns.3.x), Double(transform.columns.3.y), Double(transform.columns.3.z)],
+            quaternionXYZW: [Double(quaternion.x), Double(quaternion.y), Double(quaternion.z), Double(quaternion.w)],
+            trackingState: tracking.0, trackingReason: tracking.1, valid: tracking.0 != "not_available")
+        var snapshot = USIFrameSnapshot(sessionID: sessionID, metadata: metadata,
             image: frame.capturedImage, depth: frame.sceneDepth?.depthMap, confidence: frame.sceneDepth?.confidenceMap)
+        snapshot.recordingTicket = recorder?.admitCamera(pose)
         if encoding {
-            if pending != nil { encodeDrops += 1 }
-            pending = snapshot
+            if snapshot.recordingTicket != nil {
+                // Recording tickets are bounded by the runtime and never coalesced.
+                recordingPending.append(snapshot)
+                pending = nil
+            } else {
+                if pending != nil { encodeDrops += 1 }
+                pending = snapshot
+            }
         } else { encode(snapshot) }
         rateFrames += 1
         if rateStart == 0 { rateStart = frame.timestamp }
@@ -310,6 +390,12 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
                 if self.running, snapshot.sessionID == self.sessionID {
                     switch result {
                     case .success(var encoded):
+                        if let ticket = snapshot.recordingTicket {
+                            do {
+                                let image = try USICollectionImageAdapter.make(metadata: encoded.metadata, payload: encoded.payload)
+                                self.recorder?.completeCamera(ticket, image: image)
+                            } catch { self.recorder?.completeCamera(ticket, image: nil) }
+                        }
                         var counts = encoded.metadata["counters"] as? [String: Any] ?? [:]
                         counts["encode_drops"] = self.encodeDrops
                         encoded.metadata["counters"] = counts
@@ -322,11 +408,14 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
                             }
                         }
                     case .failure:
+                        self.recorder?.completeCamera(snapshot.recordingTicket, image: nil)
                         self.encodeDrops += 1
                         self.usb.health(event: "encode_error", message: "Frame encoding failed; sequence gap retained")
                     }
                 }
-                if self.running, let next = self.pending {
+                if self.running, !self.recordingPending.isEmpty {
+                    self.encode(self.recordingPending.removeFirst())
+                } else if self.running, let next = self.pending {
                     self.pending = nil
                     self.encode(next)
                 }
@@ -338,6 +427,8 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         guard session === self.session else { return }
         running = false
         pending = nil
+        recordingPending.removeAll()
+        recorder?.stop()
         if previewMailbox.offer(epoch: sessionID, details: .unavailable("Camera interrupted")) { scheduleUIUpdate() }
         usb.health(event: "arkit_interrupted", message: "Capture interrupted; next resume resets world epoch")
     }
@@ -354,6 +445,8 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         guard session === self.session else { return }
         running = false
         pending = nil
+        recordingPending.removeAll()
+        recorder?.stop()
         usb.health(event: "arkit_error", message: error.localizedDescription)
         if previewMailbox.offer(epoch: sessionID, details: .unavailable("ARKit: \(error.localizedDescription)")) { scheduleUIUpdate() }
     }
