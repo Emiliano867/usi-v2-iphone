@@ -148,6 +148,29 @@ def test_all_pressure_quality_masks_survive_legacy_mcap_roundtrip(tmp_path):
     assert observed==[7-i for i in range(8)]
 
 
+def test_ros_pressure_arrays_keep_valid_calibrated_seal_states():
+    from usi_stream.collection_state import SealModel,PressureCalibration,ChamberCalibration
+    from usi_collection_msgs.msg import SourceRecord
+    model=SealModel(PressureCalibration('measured',tuple(
+        ChamberCalibration(i,i,50.0,65.0,200_000_000) for i in range(3))))
+    cases=[(0,100.0,7,['unsealed']*3),
+           (10_000_000,25.0,7,['unsealed']*3),
+           (210_000_000,25.0,7,['sealed']*3),
+           (220_000_000,25.0,3,['sealed','sealed','invalid']),
+           (230_000_000,100.0,7,['sealed','sealed','unsealed']),
+           (430_000_000,100.0,7,['unsealed']*3)]
+    for seq,(elapsed,pressure,mask,expected) in enumerate(cases):
+        meta=example('collection_pressure'); sample=meta['samples'][0]
+        sample.update(sequence=seq,raw_sequence=seq,
+            pressure_centi_pa=[int(pressure*100_000)]*3,quality_mask=mask)
+        records=records_for_packet(Packet(MessageType.PRESSURE,meta),1_000_000_000+elapsed,
+            2_000_000_000+elapsed,seal_model=model)
+        record=next(r for r in records if r.stream_id=='seal')
+        content=json.loads(deserialize_message(record.serialized,SourceRecord).metadata_json)
+        assert content['states']==expected
+        assert content['calibration_id']=='measured'
+
+
 @pytest.mark.parametrize('omitted_kind,expected_state',[
     (None,'saved'),(MessageType.PRESSURE,'incomplete'),(MessageType.FRAME,'incomplete')])
 def test_generated_core_trial_saves_only_after_reopened_inventory(tmp_path,omitted_kind,expected_state):

@@ -171,11 +171,14 @@ def records_for_packet(packet,host_receive_monotonic_ns,host_receive_wall_ns,sea
             source=_source('pressures',meta,sample['sequence'],mono,wall,sample=sample)
             msg=PressureRecord(); msg.source=source
             msg.pressure_centi_pa=sample['pressure_centi_pa']; msg.quality_mask=sample['quality_mask']
-            msg.pressure_kpa_abs=[x/100000 for x in sample['pressure_centi_pa']]
+            pressures=[x/100000 for x in sample['pressure_centi_pa']]
+            msg.pressure_kpa_abs=pressures
             records.append(_serialize('/usi_collection/pressures',msg,'pressures',source.source_id,source.epoch_id,source.sequence,wall))
             seal=_source('seal',meta,sample['sequence'],mono,wall,sample=sample)
             if seal_model:
-                seal_model.update(msg.pressure_kpa_abs,quality_mask=sample['quality_mask'],received_ns=mono)
+                # Fixed ROS arrays expose NumPy scalars; the pure state model
+                # deliberately accepts validated Python numbers, not ROS types.
+                seal_model.update(pressures,quality_mask=sample['quality_mask'],received_ns=mono)
                 state=seal_model.snapshot(mono)
                 seal.metadata_json=_json(dict(calibration_id=state.calibration_id,states=state.states,
                     aggregate=state.aggregate,sealed_count=state.sealed_count,known_count=state.known_count,
