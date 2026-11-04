@@ -226,6 +226,17 @@ final class USICollectionView: UIView {
         adaptHeader()
     }
     required init?(coder: NSCoder) { fatalError("Use init(frame:)") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // ARView follows interface rotation itself. These image views display
+        // sensor-native pixels, whose upright orientation is landscapeRight.
+        // Rotate only their presentation; recorded images and poses stay raw.
+        let rotation: CGAffineTransform = window?.windowScene?.interfaceOrientation == .landscapeLeft
+            ? CGAffineTransform(rotationAngle: .pi) : .identity
+        for imageView in [preview, depthImage, depthThumbnail] {
+            imageView.transform = rotation
+        }
+    }
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
         adaptHeader()

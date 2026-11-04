@@ -105,6 +105,15 @@ jobs:
           build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Info.plist")
           test -n "$build_number"
           printf '%s\n' "$build_number" > artifacts/bundle-build-version.txt
+          python3 - "$app/Info.plist" <<'PY'
+          import plistlib, sys
+          with open(sys.argv[1], 'rb') as stream:
+              orientations = plistlib.load(stream)['UISupportedInterfaceOrientations']
+          assert set(orientations) == {
+              'UIInterfaceOrientationLandscapeRight', 'UIInterfaceOrientationLandscapeLeft'
+          }, f'Expected both landscape directions, got {orientations}'
+          print('Packaged iPhone app supports both landscape directions')
+          PY
           mkdir -p "$RUNNER_TEMP/usi-package/Payload"
           ditto "$app" "$RUNNER_TEMP/usi-package/Payload/iPhUMI.app"
           (
