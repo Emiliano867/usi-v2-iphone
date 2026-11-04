@@ -17,6 +17,7 @@ struct USILiveSensorState {
     private var connected = false
     private var bootID: UInt32?
     private var seal = USISealModel(calibration: nil)
+    private var referenceWindow = USIPressureReferenceWindow()
     private var trigger = USITriggerModel()
     private var pressureHistory = USISequenceHistory()
     private var triggerHistory = USISequenceHistory()
@@ -27,14 +28,26 @@ struct USILiveSensorState {
     private var duplicates: UInt64 = 0
     private var rejected: UInt64 = 0
 
-    mutating func connect() { self = Self(); connected = true }
+    mutating func connect() {
+        let calibration = seal.calibration
+        self = Self(); connected = true
+        seal = USISealModel(calibration: calibration)
+    }
     mutating func disconnect() {
         connected = false
         bootID = nil
-        seal = USISealModel(calibration: nil)
+        seal = USISealModel(calibration: seal.calibration)
+        referenceWindow = USIPressureReferenceWindow()
         trigger = USITriggerModel()
     }
     mutating func reject() { rejected += 1 }
+    mutating func selectCalibration(_ calibration: USIPressureCalibration?) {
+        seal = USISealModel(calibration: calibration)
+    }
+    func calibrationReference(nowNs: UInt64) throws -> [Double] {
+        guard connected else { throw USISealCalibrationError.notReady }
+        return try referenceWindow.reference(nowNs: nowNs)
+    }
 
     mutating func receive(_ event: USIBLEEvent, receivedNs: UInt64) throws {
         guard connected else { throw USICollectionError.invalid("BLE is not subscribed") }
@@ -53,6 +66,8 @@ struct USILiveSensorState {
                 guard accept(observation) else { continue }
                 try seal.update(pressuresKPaAbs: sample.pressuresKPaAbs,
                     qualityMask: sample.qualityMask, receivedNs: receivedNs)
+                referenceWindow.receive(pressures: sample.pressuresKPaAbs,
+                    quality: sample.qualityMask, time: receivedNs)
                 pressureSamples += 1
                 if let missing = observation.missing { missingPressureSamples += missing.upperBound - missing.lowerBound }
             }

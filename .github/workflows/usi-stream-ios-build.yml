@@ -85,7 +85,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/usi-derived" \
             -archivePath "$RUNNER_TEMP/USIStream.xcarchive" \
             -resultBundlePath "$GITHUB_WORKSPACE/artifacts/USIStream.xcresult" \
-            CURRENT_PROJECT_VERSION="4.${GITHUB_RUN_NUMBER}" \
+            CURRENT_PROJECT_VERSION="5.${GITHUB_RUN_NUMBER}" \
             USI_UI_REVISION="${GITHUB_SHA:0:7}" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
@@ -109,17 +109,17 @@ jobs:
           ditto "$app" "$RUNNER_TEMP/usi-package/Payload/iPhUMI.app"
           (
             cd "$RUNNER_TEMP/usi-package"
-            ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/artifacts/Suction-UMI-v2-live-sensors.ipa"
+            ditto -c -k --keepParent Payload "$GITHUB_WORKSPACE/artifacts/Suction-UMI-v2-seal-colors.ipa"
           )
-          unzip -t artifacts/Suction-UMI-v2-live-sensors.ipa > artifacts/ipa-integrity.txt
-          shasum -a 256 artifacts/Suction-UMI-v2-live-sensors.ipa > artifacts/ipa-sha256.txt
-          printf '%s\n' 'Live-sensors update. Approved camera layout with CoreBluetooth pressure/trigger reception and stale-data clearing. Requires the separate private BLE firmware on the rig. Seal calibration, sensor USB forwarding, and host trial recording are not connected in this app build. Actual BLE reception and rates require phone/rig validation.' > artifacts/STATUS.txt
+          unzip -t artifacts/Suction-UMI-v2-seal-colors.ipa > artifacts/ipa-integrity.txt
+          shasum -a 256 artifacts/Suction-UMI-v2-seal-colors.ipa > artifacts/ipa-sha256.txt
+          printf '%s\n' 'Pressure seal calibration update. Settings captures steady open/sealed pressures and saves per-channel hysteresis thresholds. Green/red indicates a calibrated pressure seal; invalid or stale data is gray. Existing camera layout and BLE telemetry remain. This does not fix the observed sensor stuck-busy fault. Sensor USB forwarding and host trial recording remain pending. Physical calibration, chamber mapping, and pump-on reliability require rig validation.' > artifacts/STATUS.txt
 
       - name: Retain diagnostic evidence and unsigned IPA
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: suction-umi-v2-live-sensors-${{ github.run_id }}
+          name: suction-umi-v2-seal-colors-${{ github.run_id }}
           path: artifacts/
           if-no-files-found: warn
           retention-days: 3

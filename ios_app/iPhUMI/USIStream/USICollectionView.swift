@@ -282,7 +282,14 @@ final class USICollectionView: UIView {
         pressure.accessibilityValue = seal.accessibilityValue
         let known = states.filter { $0 != .unknown }.count
         let sealed = states.filter { $0 == .sealed }.count
-        sealStatus.text = known < 3 ? "Seal unknown · awaiting valid calibration/data" : "\(sealed == 3 ? "Full seal" : "Partial seal") · \(sealed)/3"
+        if known == 3 {
+            let text = sealed == 3 ? "Full pressure seal" : sealed == 0 ? "No pressure seal" : "Partial pressure seal"
+            sealStatus.text = "\(text) · \(sealed)/3"
+        } else if pressures.allSatisfy({ $0 == nil }) {
+            sealStatus.text = "Pressure unavailable · check sensor data"
+        } else {
+            sealStatus.text = "Seal unknown · check data / Settings calibration"
+        }
         suction.text = suctionText
     }
     func applyTrial(number: Int, state: String, elapsedText: String, recording: Bool) {

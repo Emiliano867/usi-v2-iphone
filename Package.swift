@@ -10,7 +10,7 @@ let package = Package(
                 sources: ["USIWireProtocol.swift", "USIPreviewMailbox.swift", "USICollectionWire.swift",
                           "USICollectionState.swift", "USIBLECodec.swift", "USICollectionPackets.swift",
                           "USICollectionTransport.swift", "USICollectionBLEProgress.swift",
-                          "USICollectionRuntime.swift", "USICollectionRendering.swift", "USILiveSensorState.swift"]),
+                          "USICollectionRuntime.swift", "USICollectionRendering.swift", "USILiveSensorState.swift", "USISealCalibrationProfile.swift"]),
         .testTarget(name: "USIWireTests", dependencies: ["USIWire"], path: "tests/swift")
     ]
 )
