@@ -35,6 +35,34 @@ def test_generated_mcap_closes_reopens_and_deserializes(tmp_path):
     _run_child('direct',tmp_path)
 
 
+@pytest.mark.parametrize('pressure_mask',[7,3,0])
+def test_dataset_reader_exports_real_records_without_policy_actions(tmp_path,pressure_mask):
+    import csv
+    from usi_stream.dataset_reader import export_episode
+    _direct_mcap_roundtrip(tmp_path,pressure_mask=pressure_mask)
+    report=export_episode(tmp_path/'generated_fixture',tmp_path/'inspection')
+    assert report['stream_counts']['main_rgb']==1
+    assert report['stream_counts']['raw_depth']==1
+    assert report['pressure_quality_masks']=={str(pressure_mask):1}
+    assert report['training_ready'] is False
+    assert 'camera_to_tool_calibration_unavailable' in report['training_blockers']
+    with (tmp_path/'inspection'/'pressures.csv').open() as f:
+        sample=next(csv.DictReader(f))
+    assert sample['source_time_us']=='100'
+    assert sample['host_receive_wall_ns']=='2000000'
+    assert sample['quality_mask']==str(pressure_mask)
+    for index in range(3):
+        valid=bool(pressure_mask & (1<<index))
+        assert sample[f'valid_c{index+1}']==str(int(valid))
+        assert bool(sample[f'c{index+1}_kpa_abs'])==valid
+        assert sample[f'raw_c{index+1}_centi_pa']!=''
+    with (tmp_path/'inspection'/'trigger.csv').open() as f:
+        trigger=next(csv.DictReader(f))
+    assert 'trigger_derived_suction_on' in trigger
+    assert 'pump_feedback' not in trigger
+    assert not (tmp_path/'inspection'/'actions.csv').exists()
+
+
 def test_reopen_releases_frame_payloads_while_scanning(tmp_path,monkeypatch):
     """A long bag must not retain every decoded image until EOF."""
     import rosbag2_py
@@ -67,7 +95,7 @@ def test_reopen_releases_frame_payloads_while_scanning(tmp_path,monkeypatch):
     assert Frame.live==0
 
 
-def _direct_mcap_roundtrip(tmp_path):
+def _direct_mcap_roundtrip(tmp_path,pressure_mask=7):
     from rosidl_runtime_py.utilities import get_message
     frame=example('collection_frame')
     jpeg=io.BytesIO(); Image.new('RGB',(2,2),(12,23,34)).save(jpeg,format='JPEG')
@@ -81,9 +109,10 @@ def _direct_mcap_roundtrip(tmp_path):
     frame['confidence'].update(width=2,height=2,length=4)
     payload=rgb+depth+bytes([2,0,1,2])
     validate_metadata(MessageType.FRAME,frame,len(payload))
+    pressure=example('collection_pressure'); pressure['samples'][0]['quality_mask']=pressure_mask
     packets=[Packet(MessageType.FRAME,frame,payload),
              Packet(MessageType.POSES,example('collection_poses')),
-             Packet(MessageType.PRESSURE,example('collection_pressure')),
+             Packet(MessageType.PRESSURE,pressure),
              Packet(MessageType.TRIGGER,example('collection_trigger'))]
     store=JazzyMcapStore(); writer=BoundedRecorder(store,tmp_path/'generated_fixture',capacity=32)
     writer.open()
@@ -111,7 +140,7 @@ def _direct_mcap_roundtrip(tmp_path):
     assert count==len(reopened)
     assert types['/pressure_timing']=='std_msgs/msg/UInt64MultiArray'
     assert types['/trigger_timing']=='std_msgs/msg/UInt64MultiArray'
-    assert timing['/pressure_timing'][1:5]==[100,2000000,1,0]
+    assert timing['/pressure_timing'][1:5]==[100,2000000,1,(~pressure_mask)&7]
     assert timing['/trigger_timing'][1:4]==[111,2000000,1]
     assert timing['/pressure_timing'][5]!=0  # stable numeric surrogate; raw boot string is in typed record
     assert (tmp_path/'generated_fixture'/'metadata.yaml').exists()
