@@ -40,6 +40,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
     private var lastStatusTime: TimeInterval = -.infinity
     private var rateStart: TimeInterval = 0
     private var rateFrames = 0
+    private var captureFPS = 30 // captureQueue only; actual selected ARKit format
 
     override func loadView() { view = content }
 
@@ -106,7 +107,12 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
         guard presentedViewController == nil else { return }
         guard !trialFrozen else { showTrialError("Finish or resolve the current trial before changing settings."); return }
         let controller = USICollectionSettingsViewController()
-        controller.onSave = { [weak self] in self?.updateSessionLabel(); self?.updateDiagnostics() }
+        let previousRate = USICaptureRate.load()
+        controller.onSave = { [weak self] in
+            guard let self else { return }
+            self.updateSessionLabel(); self.updateDiagnostics()
+            if USICaptureRate.load() != previousRate { self.beginEpoch() }
+        }
         controller.onReference = { [weak self] completion in
             guard let self else { return }
             self.captureQueue.async {
@@ -196,6 +202,7 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             updateDiagnostics()
             return
         }
+        let requestedFPS = USICaptureRate.load().rawValue
         captureQueue.async { [weak self] in
             guard let self else { return }
             if let expectedSession, self.session !== expectedSession { return }
@@ -212,10 +219,11 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             self.lastStatusTime = -.infinity
             let configuration = ARWorldTrackingConfiguration()
             if let format = ARWorldTrackingConfiguration.supportedVideoFormats
-                .filter({ $0.framesPerSecond == 60 })
+                .filter({ $0.framesPerSecond == requestedFPS })
                 .min(by: { $0.imageResolution.width * $0.imageResolution.height < $1.imageResolution.width * $1.imageResolution.height }) {
                 configuration.videoFormat = format
             }
+            self.captureFPS = configuration.videoFormat.framesPerSecond
             if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
                 configuration.frameSemantics.insert(.sceneDepth)
             }
@@ -372,8 +380,8 @@ final class USIStreamViewController: UIViewController, ARSessionDelegate {
             let text = String(format: "Camera: %.1f FPS\nFrame: %llu\nTracking: %@\nThermal: %@\nXYZ: %.3f, %.3f, %.3f m\nEncode drops: %llu\nSession: %@",
                 fps, currentSequence, tracking.0, thermalDescription(), transform.columns.3.x, transform.columns.3.y,
                 transform.columns.3.z, encodeDrops, sessionID)
-            let details = USIPreviewDetails(tracking: trackingText, cameraRate: String(format: "%.1f FPS · target 60", fps),
-                depth: depth, diagnostics: "\(text)\nDepth: \(depth)\nCapture target: 60 FPS; observed acquisition rate shown above.\nRGB USB JPEG size: up to 640 px wide. Depth preview updates with encoded frames (up to 10/s); source depth and native RGB are independent.\nSelected source: \(CVPixelBufferGetWidth(frame.capturedImage)) × \(CVPixelBufferGetHeight(frame.capturedImage))", isCapturing: true,
+            let details = USIPreviewDetails(tracking: trackingText, cameraRate: String(format: "%.1f FPS · target %d", fps, captureFPS),
+                depth: depth, diagnostics: "\(text)\nDepth: \(depth)\nCapture target: \(captureFPS) FPS; observed acquisition rate shown above.\nRGB USB JPEG size: up to 640 px wide. Depth preview updates with encoded frames (up to 10/s); source depth and native RGB are independent.\nSelected source: \(CVPixelBufferGetWidth(frame.capturedImage)) × \(CVPixelBufferGetHeight(frame.capturedImage))", isCapturing: true,
                 positionText: String(format: "Camera XYZ: %.3f / %.3f / %.3f m", transform.columns.3.x, transform.columns.3.y, transform.columns.3.z))
             if previewMailbox.offer(epoch: sessionID, details: details) { scheduleUIUpdate() }
         }

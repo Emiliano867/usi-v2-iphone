@@ -85,7 +85,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/usi-derived" \
             -archivePath "$RUNNER_TEMP/USIStream.xcarchive" \
             -resultBundlePath "$GITHUB_WORKSPACE/artifacts/USIStream.xcresult" \
-            CURRENT_PROJECT_VERSION="6.${GITHUB_RUN_NUMBER}" \
+            CURRENT_PROJECT_VERSION="7.${GITHUB_RUN_NUMBER}" \
             USI_UI_REVISION="${GITHUB_SHA:0:7}" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
@@ -113,7 +113,7 @@ jobs:
           )
           unzip -t artifacts/Suction-UMI-v2-recording.ipa > artifacts/ipa-integrity.txt
           shasum -a 256 artifacts/Suction-UMI-v2-recording.ipa > artifacts/ipa-sha256.txt
-          printf '%s\n' 'Native Core collection integration: ARKit RGB/depth/confidence/pose plus BLE pressure/trigger/clocks over USB port 5559; host-acknowledged Start/Stop and verified MCAP Saved. Includes measured seal calibration. Ultrawide and calibrated tool TCP remain unavailable. Native build success does not establish a physical recording or fix the observed sensor stuck-busy fault; run the phone/Ubuntu trial and inspect verification.json.' > artifacts/STATUS.txt
+          printf '%s\n' 'Core collection with selectable 30/60 FPS (default 30): ARKit RGB/depth/confidence/pose plus BLE pressure/trigger/clocks over USB port 5559; host-acknowledged Start/Stop and verified MCAP Saved. Includes measured seal calibration. Ultrawide and calibrated tool TCP remain unavailable. Native build success does not establish a physical recording; run the phone/Ubuntu trial and inspect verification.json.' > artifacts/STATUS.txt
 
       - name: Retain diagnostic evidence and unsigned IPA
         if: always()

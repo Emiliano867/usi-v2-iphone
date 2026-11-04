@@ -2,8 +2,7 @@
 import io
 import hashlib
 import json
-import math
-import struct
+from array import array
 
 from .collection_protocol import MessageType, slice_frame, validate_metadata
 from .recorder import Record
@@ -50,6 +49,7 @@ def _source(stream,meta,sequence,monotonic_ns,wall_ns, *, source_id=None,epoch_i
     return source
 
 def _validate_pixels(meta,parts):
+    import numpy as np
     from PIL import Image
     for descriptor,data in [(meta['rgb'],parts.rgb)]:
         with Image.open(io.BytesIO(data.tobytes())) as image:
@@ -58,11 +58,13 @@ def _validate_pixels(meta,parts):
             if image.size != (descriptor['width'],descriptor['height']): raise ValueError('JPEG dimensions differ')
     # Preserve every raw IEEE754 bit pattern. Nonfinite/nonpositive pixels get
     # mask 0 below; changing those bytes would falsify the source plane.
-    if parts.confidence is not None and any(x > 2 for x in parts.confidence):
+    if parts.confidence is not None and np.frombuffer(parts.confidence,dtype=np.uint8).max(initial=0)>2:
         raise ValueError('invalid confidence level')
 
 def _depth_mask(data):
-    return [int(math.isfinite(value) and value>0) for (value,) in struct.iter_unpack('<f',data)]
+    import numpy as np
+    values=np.frombuffer(data,dtype='<f4')
+    return (np.isfinite(values) & (values>0)).astype(np.uint8).tobytes()
 
 def _legacy_boot_number(boot_id):
     if boot_id.isdecimal():
@@ -117,7 +119,7 @@ def validate_reopened_frame(msg):
     elif msg.encoding=='32FC1':
         if msg.stride!=msg.width*4 or len(msg.depth_le_f32)!=msg.stride*msg.height:
             raise ValueError('reopened depth stride/length')
-        if list(msg.depth_valid_mask)!=_depth_mask(msg.depth_le_f32):
+        if bytes(msg.depth_valid_mask)!=_depth_mask(msg.depth_le_f32):
             raise ValueError('reopened depth validity mask differs from raw plane')
     elif msg.encoding=='mono8':
         if msg.stride!=msg.width or len(msg.confidence_level)!=msg.width*msg.height:
@@ -148,11 +150,13 @@ def records_for_packet(packet,host_receive_monotonic_ns,host_receive_wall_ns,sea
             msg.depth_present=parts.depth is not None; msg.confidence_present=parts.confidence is not None
             msg.depth_encoding='32FC1' if parts.depth is not None else ''
             msg.depth_association=meta['depth']['association'] if parts.depth is not None else ''
-            if stream in ('main_rgb','ultrawide'): msg.rgb_jpeg=list(data)
+            # ROS accepts native uint8 arrays without scanning Python integers.
+            # Keep conversion well below the camera's 16.7 ms frame interval.
+            if stream in ('main_rgb','ultrawide'): msg.rgb_jpeg=array('B',data.tobytes())
             elif stream=='raw_depth':
-                msg.depth_le_f32=list(data)
-                msg.depth_valid_mask=_depth_mask(data)
-            else: msg.confidence_level=list(data)
+                msg.depth_le_f32=array('B',data.tobytes())
+                msg.depth_valid_mask=array('B',_depth_mask(data))
+            else: msg.confidence_level=array('B',data.tobytes())
             records.append(_serialize('/usi_collection/'+stream,msg,stream,msg.source.source_id,msg.source.epoch_id,seq,wall))
     elif kind == MessageType.POSES:
         for sample in meta['samples']:

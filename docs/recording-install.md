@@ -12,7 +12,7 @@ git merge --ff-only FETCH_HEAD &&
 git push origin main
 ```
 
-Run **Suction UMI v2 iOS build** on `main`, leaving simulator layout checks unchecked. Download artifact `suction-umi-v2-recording-<run ID>` and install **Suction-UMI-v2-recording.ipa** through iLoader. Its build number starts with `6.`.
+Run **Suction UMI v2 iOS build** on `main`, leaving simulator layout checks unchecked. Download artifact `suction-umi-v2-recording-<run ID>` and install **Suction-UMI-v2-recording.ipa** through iLoader. The version with the 30/60 FPS setting has a build number starting with `7.`.
 
 ## Run the Ubuntu recorder
 
@@ -36,7 +36,7 @@ Core records RGB JPEG, raw LiDAR depth and confidence when provided by ARKit, in
 
 ## Current limits and evidence
 
-- The selected native ARKit format determines `target_fps`; the adapter requests the existing 60 FPS format when supported. Actual camera/image/pose cadence is verified by the host; a sustained-rate shortfall cannot be relabeled Saved. The JPEG queue is bounded by four runtime tickets and recording tickets are never coalesced.
+- Settings offers **30 FPS / 60 FPS**, defaulting to 30 FPS to reduce camera load. Save and Done applies a changed rate by restarting AR tracking before the next trial. The selected native ARKit format determines `target_fps`, and Data shows both the actual acquisition rate and that target. Actual camera/image/pose cadence is verified by the host; thermal throttling below the selected target still makes a trial Incomplete. The JPEG queue is bounded by four runtime tickets and recording tickets are never coalesced.
 - Start freezes settings and source identities. Stop closes admission, obtains source end fences and drains pre-end encoded work. Background, interruption, disconnect or failed end fencing cannot produce an invented complete trial. Reconnection queries an unresolved trial instead of silently resuming it.
 - The host repair excludes out-of-fence images from trial-loss evidence and uses explicit source-prefix counters/identity coverage when pre-Begin encoder work makes lifetime totals ambiguous. A completed host now advertises readiness for the next trial.
 - 73 Foundation tests and 116 Python/Jazzy tests passed locally, including generated MCAP readback and the new regression cases. These are software tests, not a physical trial. UIKit/Network source syntax parsing passed; native SDK build still runs in GitHub Actions.

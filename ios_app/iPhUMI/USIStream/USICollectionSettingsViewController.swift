@@ -11,6 +11,7 @@ final class USICollectionSettingsViewController: UIViewController {
     private let openStatus = USICollectionView.label("Open: not captured", style: .body)
     private let sealedStatus = USICollectionView.label("Sealed: not captured", style: .body)
     private let useCalibration = UIButton(configuration: .filled())
+    private let cameraRate = UISegmentedControl(items: ["30 FPS", "60 FPS"])
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -19,6 +20,12 @@ final class USICollectionSettingsViewController: UIViewController {
         let heading = USICollectionView.label("Collection Settings", style: .title2)
         let stack = UIStackView(arrangedSubviews: [heading])
         stack.axis = .vertical; stack.spacing = 12; stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.addArrangedSubview(USICollectionView.label("Camera frame rate", style: .headline))
+        cameraRate.selectedSegmentIndex = USICaptureRate.load() == .fps60 ? 1 : 0
+        cameraRate.accessibilityLabel = "Camera frame rate"
+        cameraRate.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        stack.addArrangedSubview(cameraRate)
+        stack.addArrangedSubview(USICollectionView.label("30 FPS reduces camera load. 60 FPS needs a cool phone. Saving a changed rate restarts AR tracking; finish your trial first.", style: .footnote))
         for (key, title) in [("usi.session", "Session"), ("usi.task", "Task label"), ("usi.gripper", "Gripper ID"), ("usi.calibration", "Calibration label (optional)")] {
             let field = UITextField()
             field.borderStyle = .roundedRect
@@ -61,6 +68,7 @@ final class USICollectionSettingsViewController: UIViewController {
         done.translatesAutoresizingMaskIntoConstraints = false
         done.addAction(UIAction { [weak self] _ in
             guard let self else { return }
+            (self.cameraRate.selectedSegmentIndex == 1 ? USICaptureRate.fps60 : .fps30).save()
             for (key, field) in self.fields {
                 UserDefaults.standard.set(String((field.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(128)), forKey: key)
             }

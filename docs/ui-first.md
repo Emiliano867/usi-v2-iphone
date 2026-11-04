@@ -3,7 +3,7 @@
 This update uses the existing ARKit/USB camera path with the approved native collection layout. The unfinished collection infrastructure is kept on the separate `usi-v2/g4-integrated-collection` branch.
 
 - Collect Demonstrations opens the new screen; original iPhUMI modes are under Advanced.
-- Live RGB uses RealityKit with the existing ARSession, independent of JPEG encoding. Capture requests a supported 60 FPS format and reports observed acquisition FPS.
+- Live RGB uses RealityKit with the existing ARSession, independent of JPEG encoding. Settings selects 30 or 60 FPS (default 30), and Data reports observed acquisition FPS and the selected native format's target.
 - Depth shows actual ARKit depth as a grayscale visualization: near is light, invalid is black, display range 0–2 m. The existing raw USB depth bytes are unchanged. The depth preview updates with encoded frames, up to 10 times per second.
 - Ultrawide has an explicit unavailable message; this path does not invent a concurrent image.
 - One circle contains three equal 120-degree sectors, numeric pressure rows, and a separate suction readout. Unconnected sensor readings stay unknown/gray.

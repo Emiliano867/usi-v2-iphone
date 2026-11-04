@@ -440,7 +440,10 @@ class Collector:
         baseline=self._begin_source_counters.get(key)
         for field in ('queue_overflow_count','rejected_count'):
             current=counter[field]; previous=baseline[field] if baseline else None
-            if current is not None and (current>previous if previous is not None else current>0): return True
+            # Explicit unknown prefix counters include unfinished pre-Begin work.
+            # They cannot establish a lifetime delta; exact fence coverage still
+            # rejects every missing in-trial identity when the bag is reopened.
+            if current is not None and (current>previous if previous is not None else baseline is None and current>0): return True
         lane=counter['stream_id']
         if lane in self.begin_fences:
             start=self.begin_fences[lane][2]
@@ -529,7 +532,7 @@ class Collector:
             for field in ('queue_overflow_count','rejected_count'):
                 final=counter[field]
                 prior=baseline[field] if baseline else None
-                if final is not None and (final>prior if prior is not None else final>0):
+                if final is not None and (final>prior if prior is not None else baseline is None and final>0):
                     errors.append('source loss '+field+': '+lane)
             if lane in self.begin_fences:
                 start=self.begin_fences[lane][2]; end=self.end_fences[lane][2]
@@ -658,6 +661,8 @@ class UsbClock:
 
 def serve(output_root,*,tcp=None,port=PORT,retry_s=1.0):
     """Connect outbound to the phone's USB listener; --tcp is an explicit test path."""
+    # Load the vectorized depth converter before connecting, outside frame intake.
+    import numpy
     collector=Collector(output_root)
     while True:
         try:

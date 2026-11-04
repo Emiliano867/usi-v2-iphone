@@ -7,7 +7,7 @@ final class USIRecorderSession {
     let runtime: USICollectionRuntime
     var requestClock: ((UInt32, UInt64) -> Bool)?
     var onStatus: ((String) -> Void)?
-    var targetFPS: Double = 60
+    var targetFPS: Double = 30
     private let queue: DispatchQueue
     private var listener: NWListener?
     private var client: NWConnection?

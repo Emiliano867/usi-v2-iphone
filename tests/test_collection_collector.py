@@ -254,6 +254,29 @@ def test_explicit_camera_prefix_counters_do_not_attribute_old_encode_to_trial(tm
     assert result['ready'] is True, 'A completed host must accept the next trial'
 
 
+@pytest.mark.parametrize('field', ['queue_overflow_count', 'rejected_count'])
+@pytest.mark.parametrize('omit_image', [False, True])
+def test_unknown_begin_loss_counter_still_requires_exact_image_coverage(tmp_path, field, omit_image):
+    host=host_at(tmp_path,MemoryStore()); host.command(core_prepare())
+    baseline=dict(stream_id='main_rgb',source_id='session-A',epoch_id='world-A',
+        source_count=1,received_count=1,writer_accepted_count=None,queue_overflow_count=None,
+        rejected_count=None,duplicate_count=0,missing_ranges=[])
+    health=example('collection_health'); health['counters']=[baseline]
+    host.ingest(Packet(MessageType.HEALTH,health))
+    host.command(command('begin',1,1))
+    for packet in packets(1):
+        if not (omit_image and packet.message_type==MessageType.FRAME): host.ingest(packet)
+    final=dict(baseline,source_count=2,received_count=2,**{field:58})
+    host.ingest(Packet(MessageType.HEALTH,dict(health,counters=[final])))
+    assert host.status()['state']=='recording'
+    add_control_evidence(host)
+    stop=command('stop',2,2); stop['counters']=[final]
+    host.command(stop)
+    result=host.await_final(1)
+    assert result['state']==('incomplete' if omit_image else 'saved'),result['reason']
+    if omit_image: assert 'main_rgb:1' in result['reason']
+
+
 def test_stale_required_source_revokes_recording(tmp_path):
     clock=[1_000_000_000]
     host=Collector(tmp_path,storage_factory=MemoryStore,record_factory=fake_records,

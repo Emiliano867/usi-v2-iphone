@@ -6,6 +6,8 @@ The collection host consumes the strict v2 protocol on the iPhone's USB listener
 
 From the repository root, with ROS 2 Jazzy installed:
 
+The host also needs Pillow and NumPy (`python3-pil` and `python3-numpy` on Ubuntu). Image arrays and depth validity masks use bulk conversion to leave headroom for 60 FPS reception. Raw depth bytes remain unchanged.
+
 ```bash
 source /opt/ros/jazzy/setup.bash
 colcon --log-base /home/emi-linux/usi_ws/usi_v2/collection-ros/log build \
@@ -21,6 +23,8 @@ The explicit `--tcp HOST:PORT` option connects to a test listener or already for
 The isolated build and install paths above are examples for this workspace; point them to another directory outside any existing ROS overlay when deploying elsewhere. `ros2 interface show usi_collection_msgs/msg/FrameRecord` should resolve after sourcing the package overlay. The `usi_stream/mcap_storage.yaml` writer configuration uses 4 MiB indexed chunks with chunk and summary CRCs, without compression. Test throughput on the actual camera/host before choosing another configuration.
 
 ## Phone control contract
+
+An explicitly unknown Begin loss counter is not zero: pending pre-Begin encoder work can leave its lifetime total unresolved. The host uses known counter deltas and requires complete reopened identity coverage between the exact Begin and Stop fences. Unknown totals cannot excuse a missing in-trial image.
 
 The exact JSON schemas and header limits are in [collection-protocol-v2.md](collection-protocol-v2.md). The host uses those validators for every inbound packet and every outbound TRIAL_STATUS. `request_id` is idempotent against the entire normalized command; reusing it with changed contents is a conflict. A new mutating request needs the current `expected_revision`. `status` ignores that revision and can recover a lost acknowledgment. The ledger refuses new IDs at 4096 entries rather than evicting an ID and risking duplicate execution.
 
